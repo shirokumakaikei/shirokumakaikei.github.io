@@ -65,6 +65,7 @@ iframe.preview { width: 100%; border: 1px solid var(--line); border-radius: 12px
 textarea, input[type=text], input[type=password], select { width: 100%; font: inherit; color: var(--fg); background: var(--bg);
   border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
 textarea { min-height: 96px; resize: vertical; }
+[hidden] { display: none !important; }
 label { font-size: 0.85rem; color: var(--muted); display: grid; gap: 4px; }
 .bar { position: sticky; bottom: 0; background: var(--bg); border-top: 1px solid var(--line); margin-top: 16px;
   padding: 12px 0 calc(12px + env(safe-area-inset-bottom, 0px)); }
@@ -187,7 +188,8 @@ async function loadChannels() {
       const y = (await getFile(`channels/${d.name}/channel.yml`)).text;
       const get = (k) => (y.match(new RegExp(`^${k}:\\s*(.+)$`, "m")) || [])[1]?.replace(/\s+#.*$/, "").trim();
       return { id: d.name, name: get("name") || d.name, enabled: get("enabled") === "true",
-               types: /^types:/m.test(y), categories: /^categories:/m.test(y), twoStage: get("two_stage") === "true" };
+               types: /^types:/m.test(y), categories: /^categories:/m.test(y), twoStage: get("two_stage") === "true",
+               research: get("research") || "false" };
     } catch { return null; }
   }));
   channelsCache = list.filter(Boolean);
@@ -288,6 +290,7 @@ async function inbox() {
   <div class="card list">
     <button class="item" id="addTopic"><div class="main"><div class="t">ネタを追加する</div><div class="m">媒体を選んで、次に書かせるテーマを入れる</div></div>›</button>
     <button class="item" id="queue"><div class="main"><div class="t">ネタ帳を見る</div><div class="m">媒体ごとの、これから書く順番</div></div>›</button>
+    <button class="item" id="ytch"><div class="main"><div class="t">参考チャンネル</div><div class="m">編集長が週1で見る YouTube チャンネルの追加・削除・ジャンル分け</div></div>›</button>
     <button class="item" id="addExp"><div class="main"><div class="t">体験を追加する</div><div class="m">全媒体で使える実体験を足す</div></div>›</button>
     <button class="item" id="ads"><div class="main"><div class="t">広告を管理する</div><div class="m">アフィリエイトの追加・停止・削除(しろくま会計)</div></div>›</button>
   </div>
@@ -309,6 +312,7 @@ async function inbox() {
   $("#addTopic").onclick = () => go(addTopic, "ネタを追加");
   $("#queue").onclick = () => go(queueView, "ネタ帳");
   $("#addExp").onclick = () => go(addExperience, "体験を追加");
+  $("#ytch").onclick = () => go(ytChannelsView, "参考チャンネル");
   $("#ads").onclick = () => go(adsView, "広告");
 }
 
@@ -424,19 +428,31 @@ async function draft(n) {
 
 // ---------- 編集長の提案 ----------
 function queueBlocks(text) {
-  const lines = text.split("\n"); const blocks = []; let cur = null;
+  const lines = text.split("\n"); const blocks = []; let cur = null, key = "";
   lines.forEach((l, i) => {
     const m = l.match(/^  - slug:\s*(\S+)/);
-    if (m) { cur = { slug: m[1], start: i, end: i, fields: {} }; blocks.push(cur); return; }
+    if (m) { cur = { slug: m[1], start: i, end: i, fields: {}, refs: [] }; blocks.push(cur); return; }
     if (cur && /^    \S/.test(l)) {
       cur.end = i; const f = l.match(/^    (\w+):\s*(.*)$/);
-      if (f) cur.fields[f[1]] = f[2].replace(/^['"](.*)['"]$/, "$1");
+      if (f) {
+        key = f[1]; cur.fields[key] = f[2].replace(/^['"](.*)['"]$/, "$1");
+        if (key === "reference_videos" && f[2].trim().startsWith("[")) {
+          try { cur.refs = JSON.parse(f[2]); } catch { cur.refs = f[2].replace(/^\[|\]$/g, "").split(",").map(unq).filter(Boolean); }
+        }
+      }
+      return;
+    }
+    if (cur && /^ {6}/.test(l)) {  // reference_videos を複数行で書いた場合
+      cur.end = i; const v = l.match(/^\s+-\s*(.+)$/);
+      if (v && key === "reference_videos") cur.refs.push(unq(v[1]));
       return;
     }
     cur = null;
   });
   return { lines, blocks };
 }
+const refLinks = (refs) => (refs || []).filter((u) => /^https:\/\//.test(u)).map((u, i) =>
+  `<a href="${esc(u)}" target="_blank" rel="noopener">参考動画${i + 1}</a>`).join(" ");
 async function proposal(n) {
   const pr = await gh(`${R}/pulls/${n}`);
   await loadChannels().catch(() => []);
@@ -450,7 +466,7 @@ async function proposal(n) {
   <div class="card">${added.map((b) => `
     <label class="check"><input type="checkbox" checked data-slug="${esc(b.slug)}">
       <div><div style="font-weight:700;color:var(--fg)">${esc(b.fields.keyword || b.slug)}</div>
-      <div>${esc(b.fields.angle || "")}</div><div class="meta">理由: ${esc(b.fields.reason || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.fields.category ? " ・ " + esc(b.fields.category) : ""}</div></div></label>`).join("") || '<p class="empty">追加されたネタが見つかりません。</p>'}</div>
+      <div>${esc(b.fields.angle || "")}</div><div class="meta">理由: ${esc(b.fields.reason || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.fields.category ? " ・ " + esc(b.fields.category) : ""}${b.fields.research === "true" ? " ・ 一次情報で確認" : ""}</div>${b.refs.length ? `<div class="meta">${refLinks(b.refs)}</div>` : ""}</div></label>`).join("") || '<p class="empty">追加されたネタが見つかりません。</p>'}</div>
   <div class="bar"><div class="row"><button class="act" id="ok">採用する</button><button class="danger" id="ng">全部見送る</button></div></div>`;
   twoTap($("#ok"), "本当に採用する", async () => {
     const drop = [...view.querySelectorAll("input[data-slug]")].filter((c) => !c.checked).map((c) => c.dataset.slug);
@@ -509,7 +525,7 @@ async function queueView() {
     const pending = queueBlocks(q.text).blocks.filter((b) => !done.has(b.slug));
     $("#ql").innerHTML = `<h2>これから書く順(${pending.length}本)</h2><div class="card list">${pending.map((b, i) => `
       <div class="item" style="cursor:default"><span class="count">${i + 1}</span><div class="main"><div class="t">${esc(b.fields.keyword || b.slug)}</div>
-      <div class="m">${esc(b.fields.angle || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}</div></div></div>`).join("") || '<p class="empty">ネタ帳は空です。</p>'}</div>`;
+      <div class="m">${esc(b.fields.angle || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.refs.length ? " ・ " + refLinks(b.refs) : ""}</div></div></div>`).join("") || '<p class="empty">ネタ帳は空です。</p>'}</div>`;
   };
   $("#ch").onchange = show; await show();
 }
@@ -521,6 +537,8 @@ async function addTopic() {
     <label>狙う検索キーワード<input type="text" id="kw" placeholder="例:経理 月次 早期化"></label>
     <label>切り口(どういう話にするか)<textarea id="angle"></textarea></label>
     <label>この記事で使ってほしい体験(任意)<textarea id="notes"></textarea></label>
+    <label>参考にした動画のURL(任意。1行に1つ。話題と切り口の参考にするだけで、中身はなぞらせない)<textarea id="refs" rows="2" placeholder="https://www.youtube.com/watch?v=..."></textarea></label>
+    <label id="resWrap">税務・制度に触れるか<select id="res"><option value="">自動で判定</option><option value="true">触れる(一次情報で確認して出典を付ける)</option><option value="false">触れない</option></select></label>
     <label id="catWrap">カテゴリ<select id="cat">${CATS.map((c) => `<option>${c}</option>`).join("")}</select></label>
     <label id="typeWrap">記事の型<select id="type"><option value="short">short(短記事)</option><option value="main">main(主記事)</option></select></label>
     <label>順番<select id="pos"><option value="top">次に書かせる</option><option value="end">最後に並べる</option></select></label>
@@ -528,7 +546,7 @@ async function addTopic() {
   </div>
   <div class="bar"><button class="act" id="add">ネタ帳に入れる</button></div>`;
   const sync = () => { const c = chans.find((x) => x.id === $("#ch").value) || {};
-    $("#catWrap").hidden = !c.categories; $("#typeWrap").hidden = !c.types; };
+    $("#catWrap").hidden = !c.categories; $("#typeWrap").hidden = !c.types; $("#resWrap").hidden = c.research !== "auto"; };
   $("#ch").onchange = sync; sync();
   $("#add").onclick = async () => {
     const ch = $("#ch").value, c = chans.find((x) => x.id === ch) || {};
@@ -536,6 +554,8 @@ async function addTopic() {
     if (!kw || !angle) return toast("キーワードと切り口を入れてください");
     let slug = $("#slug").value.trim();
     if (slug && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) return toast("URL名は半角英小文字・数字・ハイフンだけです");
+    const refs = $("#refs").value.split(/\s+/).map((u) => u.trim()).filter(Boolean);
+    if (refs.some((u) => !/^https:\/\/\S+$/.test(u))) return toast("動画のURLは https:// から始まる形で、1行に1つ入れてください");
     if (!slug) { const d = new Date(); slug = `topic-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}-${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`; }
     $("#add").disabled = true;
     try {
@@ -547,6 +567,8 @@ async function addTopic() {
       block.push(`    keyword: ${yq(kw)}`, `    angle: ${yq(angle)}`);
       if (c.categories) block.push(`    category: ${yq($("#cat").value)}`);
       block.push(`    notes: ${yq($("#notes").value.trim())}`);
+      if (c.research === "auto" && $("#res").value) block.push(`    research: ${$("#res").value}`);
+      if (refs.length) block.push(`    reference_videos: ${JSON.stringify(refs)}`);
       let lines = q.text.replace(/\n+$/, "").replace(/^topics:\s*\[\]\s*$/m, "topics:").split("\n");
       if ($("#pos").value === "top") {
         const at = lines.findIndex((l) => /^topics:/.test(l));
@@ -581,6 +603,93 @@ async function addExperience() {
   };
 }
 
+// ---------- 参考チャンネル(shared/youtube_channels.yml) ----------
+const YT_PATH = "shared/youtube_channels.yml";
+const YT_GENRES = ["転職・キャリア", "税務・会計"];  // ファイルに genres: が無いときの既定
+const NO_GENRE = "未分類";
+function parseYt(text) {
+  const lines = text.split("\n");
+  const at = lines.findIndex((l) => /^(genres|channels):/.test(l));
+  const head = (at < 0 ? lines : lines.slice(0, at)).join("\n").replace(/\n+$/, "");
+  const gl = (lines.find((l) => /^genres:/.test(l)) || "").match(/^genres:\s*\[(.*)\]\s*$/);
+  const genres = gl ? gl[1].split(",").map(unq).filter(Boolean) : [...YT_GENRES];
+  const ci = lines.findIndex((l) => /^channels:/.test(l));
+  const list = []; let m;
+  for (const l of ci < 0 ? [] : lines.slice(ci + 1)) {
+    if ((m = l.match(/^  - handle:\s*(.+)$/))) list.push({ handle: unq(m[1]), genre: "", memo: "" });
+    else if ((m = l.match(/^  - (["']?@.+)$/))) list.push({ handle: unq(m[1]), genre: "", memo: "" });
+    else if ((m = l.match(/^    (genre|memo):\s*(.*)$/)) && list.length) list[list.length - 1][m[1]] = unq(m[2]);
+  }
+  return { head, genres, list };
+}
+const dumpYt = ({ head, genres, list }) => [head, `genres: [${genres.map(yq).join(", ")}]`, "channels:",
+  ...list.flatMap((c) => [`  - handle: ${yq(c.handle)}`, `    genre: ${yq(c.genre || NO_GENRE)}`, `    memo: ${yq(c.memo || "")}`])].join("\n") + "\n";
+function normHandle(v) {
+  v = v.trim().replace(/^https?:\/\/(www\.|m\.)?youtube\.com\//, "").replace(/[/?#].*$/, "");
+  if (v && !v.startsWith("@")) v = "@" + v;
+  return /^@[A-Za-z0-9._-]{3,30}$/.test(v) ? v : "";
+}
+async function ytChannelsView() {
+  const f = await getFile(YT_PATH).catch(() => ({ text: "# 編集長が週1で見る参考チャンネル(YouTube)\nchannels:\n", sha: undefined }));
+  const data = parseYt(f.text);
+  const save = async (msg, done) => { await putFile(YT_PATH, dumpYt(data), f.sha, msg); toast(done); go(ytChannelsView, "参考チャンネル", false); };
+  const groups = [...new Set([...data.genres, ...data.list.map((c) => c.genre || NO_GENRE)])];
+  const opts = (sel) => groups.map((g) => `<option${g === sel ? " selected" : ""}>${esc(g)}</option>`).join("");
+  view.innerHTML = `
+  <p class="meta" style="margin-top:16px">編集長が毎週、各チャンネルの直近20本の再生数を見て、伸びている話題をネタの参考にします(全媒体共通)。ジャンルごとにまとめて渡すので、媒体の読者に近いジャンルが主に使われます。動画の中身はなぞらせません。Secret YOUTUBE_API_KEY が無いときは使われません。</p>
+  <div id="ytg"></div>
+  <h2>追加する</h2>
+  <div class="card pad stack">
+    <label>チャンネルのURLか @ハンドル<input type="text" id="yt_h" placeholder="例:https://www.youtube.com/@otakuCPA"></label>
+    <label>ジャンル<select id="yt_g">${opts(data.genres[0])}<option value="__new">新しいジャンルを作る</option></select></label>
+    <label id="yt_ngWrap" hidden>新しいジャンルの名前<input type="text" id="yt_ng" placeholder="例:不動産"></label>
+    <label>どういうチャンネルか(任意)<input type="text" id="yt_m" placeholder="例:会計士の転職・キャリア"></label>
+  </div>
+  <div class="bar"><button class="act" id="ytAdd">追加する</button></div>`;
+  groups.forEach((g) => {
+    const items = data.list.filter((c) => (c.genre || NO_GENRE) === g);
+    const sec = document.createElement("div");
+    sec.innerHTML = `<h2>${esc(g)} <span class="count">${items.length}</span></h2><div class="card list">${items.length ? "" : '<div class="item" style="cursor:default"><div class="main"><div class="m">このジャンルのチャンネルはありません。</div></div><button class="danger" data-delg>このジャンルを消す</button></div>'}</div>`;
+    const box = sec.querySelector(".list");
+    if (!items.length) twoTap(sec.querySelector("[data-delg]"), "本当に消す", async () => {
+      data.genres = data.genres.filter((x) => x !== g);
+      await save(`参考チャンネルのジャンルを削除: ${g}`, "ジャンルを消しました");
+    });
+    items.forEach((c) => {
+      const d = document.createElement("div"); d.className = "item"; d.style.cursor = "default"; d.style.flexWrap = "wrap";
+      d.innerHTML = `<div class="main" style="flex:1 1 60%;min-width:0"><div class="t"><a href="https://www.youtube.com/${encodeURI(c.handle)}" target="_blank" rel="noopener">${esc(c.handle)}</a></div>
+        <div class="m">${esc(c.memo || "")}</div></div>
+        <div class="row" style="flex-basis:100%;justify-content:flex-end"><select data-genre aria-label="ジャンル" style="width:auto">${opts(c.genre || NO_GENRE)}</select><button class="danger" data-del>削除</button></div>`;
+      d.querySelector("[data-genre]").onchange = async (e) => {
+        e.target.disabled = true;
+        try { c.genre = e.target.value; await save(`参考チャンネルのジャンルを変更: ${c.handle} → ${c.genre}`, "ジャンルを変えました"); }
+        catch (err) { toast(err.message); e.target.disabled = false; }
+      };
+      twoTap(d.querySelector("[data-del]"), "本当に削除", async () => {
+        data.list.splice(data.list.indexOf(c), 1);
+        await save(`参考チャンネルを削除: ${c.handle}`, "削除しました");
+      });
+      box.appendChild(d);
+    });
+    $("#ytg").appendChild(sec);
+  });
+  $("#yt_g").onchange = () => { $("#yt_ngWrap").hidden = $("#yt_g").value !== "__new"; };
+  $("#ytAdd").onclick = async () => {
+    const h = normHandle($("#yt_h").value), memo = $("#yt_m").value.trim();
+    let genre = $("#yt_g").value;
+    if (genre === "__new") genre = $("#yt_ng").value.trim();
+    if (!h) return toast("チャンネルのURL(youtube.com/@...)か @ハンドルを入れてください");
+    if (!genre) return toast("新しいジャンルの名前を入れてください");
+    if (data.list.some((c) => c.handle.toLowerCase() === h.toLowerCase())) return toast("そのチャンネルはもう登録されています");
+    if (/—/.test(memo + genre)) return toast("エムダッシュは使えません");
+    $("#ytAdd").disabled = true;
+    try {
+      if (!data.genres.includes(genre)) data.genres.push(genre);
+      data.list.push({ handle: h, genre, memo });
+      await save(`参考チャンネルを追加: ${h}(${genre})`, "追加しました。次の週から見ます");
+    } catch (e) { toast(e.message); $("#ytAdd").disabled = false; }
+  };
+}
 
 // ---------- 広告(公開サイトの content/affiliates.yml) ----------
 const ADS_PATH = "content/affiliates.yml";
