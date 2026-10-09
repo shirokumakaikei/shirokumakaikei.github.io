@@ -290,7 +290,7 @@ async function inbox() {
   <div class="card list">
     <button class="item" id="addTopic"><div class="main"><div class="t">ネタを追加する</div><div class="m">媒体を選んで、次に書かせるテーマを入れる</div></div>›</button>
     <button class="item" id="queue"><div class="main"><div class="t">ネタ帳を見る</div><div class="m">媒体ごとの、これから書く順番</div></div>›</button>
-    <button class="item" id="ytch"><div class="main"><div class="t">参考チャンネル</div><div class="m">編集長が週1で見る YouTube チャンネルの追加・削除</div></div>›</button>
+    <button class="item" id="ytch"><div class="main"><div class="t">参考チャンネル</div><div class="m">編集長が週1で見る YouTube チャンネルの追加・削除・ジャンル分け</div></div>›</button>
     <button class="item" id="addExp"><div class="main"><div class="t">体験を追加する</div><div class="m">全媒体で使える実体験を足す</div></div>›</button>
     <button class="item" id="ads"><div class="main"><div class="t">広告を管理する</div><div class="m">アフィリエイトの追加・停止・削除(しろくま会計)</div></div>›</button>
   </div>
@@ -605,19 +605,25 @@ async function addExperience() {
 
 // ---------- 参考チャンネル(shared/youtube_channels.yml) ----------
 const YT_PATH = "shared/youtube_channels.yml";
+const YT_GENRES = ["転職・キャリア", "税務・会計"];  // ファイルに genres: が無いときの既定
+const NO_GENRE = "未分類";
 function parseYt(text) {
   const lines = text.split("\n");
-  const at = lines.findIndex((l) => /^channels:/.test(l));
+  const at = lines.findIndex((l) => /^(genres|channels):/.test(l));
   const head = (at < 0 ? lines : lines.slice(0, at)).join("\n").replace(/\n+$/, "");
+  const gl = (lines.find((l) => /^genres:/.test(l)) || "").match(/^genres:\s*\[(.*)\]\s*$/);
+  const genres = gl ? gl[1].split(",").map(unq).filter(Boolean) : [...YT_GENRES];
+  const ci = lines.findIndex((l) => /^channels:/.test(l));
   const list = []; let m;
-  for (const l of at < 0 ? [] : lines.slice(at + 1)) {
-    if ((m = l.match(/^  - handle:\s*(.+)$/))) list.push({ handle: unq(m[1]), memo: "" });
-    else if ((m = l.match(/^  - (["']?@.+)$/))) list.push({ handle: unq(m[1]), memo: "" });
-    else if ((m = l.match(/^    memo:\s*(.*)$/)) && list.length) list[list.length - 1].memo = unq(m[1]);
+  for (const l of ci < 0 ? [] : lines.slice(ci + 1)) {
+    if ((m = l.match(/^  - handle:\s*(.+)$/))) list.push({ handle: unq(m[1]), genre: "", memo: "" });
+    else if ((m = l.match(/^  - (["']?@.+)$/))) list.push({ handle: unq(m[1]), genre: "", memo: "" });
+    else if ((m = l.match(/^    (genre|memo):\s*(.*)$/)) && list.length) list[list.length - 1][m[1]] = unq(m[2]);
   }
-  return { head, list };
+  return { head, genres, list };
 }
-const dumpYt = ({ head, list }) => [head, "channels:", ...list.flatMap((c) => [`  - handle: ${yq(c.handle)}`, `    memo: ${yq(c.memo || "")}`])].join("\n") + "\n";
+const dumpYt = ({ head, genres, list }) => [head, `genres: [${genres.map(yq).join(", ")}]`, "channels:",
+  ...list.flatMap((c) => [`  - handle: ${yq(c.handle)}`, `    genre: ${yq(c.genre || NO_GENRE)}`, `    memo: ${yq(c.memo || "")}`])].join("\n") + "\n";
 function normHandle(v) {
   v = v.trim().replace(/^https?:\/\/(www\.|m\.)?youtube\.com\//, "").replace(/[/?#].*$/, "");
   if (v && !v.startsWith("@")) v = "@" + v;
@@ -626,37 +632,61 @@ function normHandle(v) {
 async function ytChannelsView() {
   const f = await getFile(YT_PATH).catch(() => ({ text: "# 編集長が週1で見る参考チャンネル(YouTube)\nchannels:\n", sha: undefined }));
   const data = parseYt(f.text);
+  const save = async (msg, done) => { await putFile(YT_PATH, dumpYt(data), f.sha, msg); toast(done); go(ytChannelsView, "参考チャンネル", false); };
+  const groups = [...new Set([...data.genres, ...data.list.map((c) => c.genre || NO_GENRE)])];
+  const opts = (sel) => groups.map((g) => `<option${g === sel ? " selected" : ""}>${esc(g)}</option>`).join("");
   view.innerHTML = `
-  <p class="meta" style="margin-top:16px">編集長が毎週、各チャンネルの直近20本の再生数を見て、伸びている話題をネタの参考にします(全媒体共通)。動画の中身はなぞらせません。Secret YOUTUBE_API_KEY が無いときは使われません。</p>
-  <h2>登録中 <span class="count">${data.list.length}</span></h2>
-  <div class="card list" id="ytl">${data.list.length ? "" : '<p class="empty">まだ登録がありません。</p>'}</div>
+  <p class="meta" style="margin-top:16px">編集長が毎週、各チャンネルの直近20本の再生数を見て、伸びている話題をネタの参考にします(全媒体共通)。ジャンルごとにまとめて渡すので、媒体の読者に近いジャンルが主に使われます。動画の中身はなぞらせません。Secret YOUTUBE_API_KEY が無いときは使われません。</p>
+  <div id="ytg"></div>
   <h2>追加する</h2>
   <div class="card pad stack">
     <label>チャンネルのURLか @ハンドル<input type="text" id="yt_h" placeholder="例:https://www.youtube.com/@otakuCPA"></label>
+    <label>ジャンル<select id="yt_g">${opts(data.genres[0])}<option value="__new">新しいジャンルを作る</option></select></label>
+    <label id="yt_ngWrap" hidden>新しいジャンルの名前<input type="text" id="yt_ng" placeholder="例:不動産"></label>
     <label>どういうチャンネルか(任意)<input type="text" id="yt_m" placeholder="例:会計士の転職・キャリア"></label>
   </div>
   <div class="bar"><button class="act" id="ytAdd">追加する</button></div>`;
-  data.list.forEach((c, i) => {
-    const d = document.createElement("div"); d.className = "item"; d.style.cursor = "default";
-    d.innerHTML = `<div class="main"><div class="t"><a href="https://www.youtube.com/${encodeURI(c.handle)}" target="_blank" rel="noopener">${esc(c.handle)}</a></div>
-      <div class="m">${esc(c.memo || "")}</div></div><button class="danger" data-del>削除</button>`;
-    twoTap(d.querySelector("[data-del]"), "本当に削除", async () => {
-      data.list.splice(i, 1);
-      await putFile(YT_PATH, dumpYt(data), f.sha, `参考チャンネルを削除: ${c.handle}`);
-      toast("削除しました"); go(ytChannelsView, "参考チャンネル", false);
+  groups.forEach((g) => {
+    const items = data.list.filter((c) => (c.genre || NO_GENRE) === g);
+    const sec = document.createElement("div");
+    sec.innerHTML = `<h2>${esc(g)} <span class="count">${items.length}</span></h2><div class="card list">${items.length ? "" : '<div class="item" style="cursor:default"><div class="main"><div class="m">このジャンルのチャンネルはありません。</div></div><button class="danger" data-delg>このジャンルを消す</button></div>'}</div>`;
+    const box = sec.querySelector(".list");
+    if (!items.length) twoTap(sec.querySelector("[data-delg]"), "本当に消す", async () => {
+      data.genres = data.genres.filter((x) => x !== g);
+      await save(`参考チャンネルのジャンルを削除: ${g}`, "ジャンルを消しました");
     });
-    $("#ytl").appendChild(d);
+    items.forEach((c) => {
+      const d = document.createElement("div"); d.className = "item"; d.style.cursor = "default"; d.style.flexWrap = "wrap";
+      d.innerHTML = `<div class="main" style="flex:1 1 60%;min-width:0"><div class="t"><a href="https://www.youtube.com/${encodeURI(c.handle)}" target="_blank" rel="noopener">${esc(c.handle)}</a></div>
+        <div class="m">${esc(c.memo || "")}</div></div>
+        <div class="row" style="flex-basis:100%;justify-content:flex-end"><select data-genre aria-label="ジャンル" style="width:auto">${opts(c.genre || NO_GENRE)}</select><button class="danger" data-del>削除</button></div>`;
+      d.querySelector("[data-genre]").onchange = async (e) => {
+        e.target.disabled = true;
+        try { c.genre = e.target.value; await save(`参考チャンネルのジャンルを変更: ${c.handle} → ${c.genre}`, "ジャンルを変えました"); }
+        catch (err) { toast(err.message); e.target.disabled = false; }
+      };
+      twoTap(d.querySelector("[data-del]"), "本当に削除", async () => {
+        data.list.splice(data.list.indexOf(c), 1);
+        await save(`参考チャンネルを削除: ${c.handle}`, "削除しました");
+      });
+      box.appendChild(d);
+    });
+    $("#ytg").appendChild(sec);
   });
+  $("#yt_g").onchange = () => { $("#yt_ngWrap").hidden = $("#yt_g").value !== "__new"; };
   $("#ytAdd").onclick = async () => {
     const h = normHandle($("#yt_h").value), memo = $("#yt_m").value.trim();
+    let genre = $("#yt_g").value;
+    if (genre === "__new") genre = $("#yt_ng").value.trim();
     if (!h) return toast("チャンネルのURL(youtube.com/@...)か @ハンドルを入れてください");
+    if (!genre) return toast("新しいジャンルの名前を入れてください");
     if (data.list.some((c) => c.handle.toLowerCase() === h.toLowerCase())) return toast("そのチャンネルはもう登録されています");
-    if (/—/.test(memo)) return toast("エムダッシュは使えません");
+    if (/—/.test(memo + genre)) return toast("エムダッシュは使えません");
     $("#ytAdd").disabled = true;
     try {
-      data.list.push({ handle: h, memo });
-      await putFile(YT_PATH, dumpYt(data), f.sha, `参考チャンネルを追加: ${h}`);
-      toast("追加しました。次の週から見ます"); go(ytChannelsView, "参考チャンネル", false);
+      if (!data.genres.includes(genre)) data.genres.push(genre);
+      data.list.push({ handle: h, genre, memo });
+      await save(`参考チャンネルを追加: ${h}(${genre})`, "追加しました。次の週から見ます");
     } catch (e) { toast(e.message); $("#ytAdd").disabled = false; }
   };
 }
