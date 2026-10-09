@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>決裁デスク | しろくま</title>
+<link rel="icon" href="data:,">
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/purify.min.js"></script>
+<style>
+/* スマホ1列。上から「要対応 → AI社員の稼働 → 方向を決める」。あなたが押すボタンだけオレンジ */
+:root {
+  --bg: #f4f7fa; --card: #ffffff; --fg: #172231; --muted: #5a6a7e; --line: #d5dde7;
+  --accent: #1f5585; --accent-soft: #e6eef6; --act: #b4541f; --act-soft: #fbeee5;
+  --ok: #2e7d4f; --warn: #a86a00; --ng: #b23b3b;
+  --font: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #10161e; --card: #18212c; --fg: #e4ebf2; --muted: #9aaabd; --line: #2f3c4d;
+    --accent: #84b6e4; --accent-soft: #1d2a38; --act: #f0a070; --act-soft: #3a2619;
+    --ok: #6cc28f; --warn: #e3b14f; --ng: #ef7d7d; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 15px; line-height: 1.7; }
+.wrap { max-width: 720px; margin: 0 auto; padding-inline: 16px; padding-block: 0 64px; }
+header.top { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line);
+  padding-top: env(safe-area-inset-top, 0px); }
+header.top .wrap { display: flex; align-items: center; gap: 10px; padding-block: 10px; }
+header.top h1 { font-size: 1.05rem; margin: 0; flex: 1; letter-spacing: 0.04em; }
+button, .btn { font: inherit; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg);
+  padding: 8px 14px; cursor: pointer; }
+button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.ghost { background: transparent; }
+button.act { background: var(--act); border-color: var(--act); color: #fff; font-weight: 700; }
+button.sub { background: var(--accent-soft); border-color: transparent; color: var(--accent); font-weight: 700; }
+button.danger { color: var(--ng); }
+button.armed { outline: 2px solid currentColor; }
+button:disabled { opacity: 0.5; cursor: default; }
+h2 { font-size: 0.85rem; color: var(--muted); letter-spacing: 0.08em; margin: 28px 0 10px; font-weight: 700; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.list { display: grid; gap: 0; }
+.item { display: flex; gap: 12px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--line); cursor: pointer;
+  background: none; border-left: 0; border-right: 0; border-top: 0; border-radius: 0; text-align: left; width: 100%; }
+.item:last-child { border-bottom: 0; }
+.item .main { flex: 1; min-width: 0; }
+.item .t { font-weight: 700; overflow-wrap: anywhere; }
+.item .m { color: var(--muted); font-size: 0.82rem; }
+.chip { font-size: 0.72rem; padding: 1px 9px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.chip.draft { color: var(--act); } .chip.editor { color: var(--accent); } .chip.ops { color: var(--ng); }
+.chip.ok { color: var(--ok); } .chip.run { color: var(--warn); } .chip.ng { color: var(--ng); } .chip.idle { color: var(--muted); }
+.empty { padding: 16px; color: var(--muted); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.stack { display: grid; gap: 12px; }
+.pad { padding: 16px; }
+.warn { border-left: 4px solid var(--warn); background: var(--act-soft); padding: 12px 14px; border-radius: 8px; }
+.warn h3 { margin: 0 0 6px; font-size: 0.9rem; }
+.md { overflow-wrap: anywhere; }
+.md h1 { font-size: 1.1rem; } .md h2 { font-size: 1rem; color: var(--fg); letter-spacing: 0; margin: 18px 0 6px; }
+.md h3 { font-size: 0.95rem; margin: 14px 0 4px; }
+.md table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 0.85rem; }
+.md th, .md td { border: 1px solid var(--line); padding: 4px 8px; }
+.md code { background: var(--accent-soft); padding: 0 4px; border-radius: 4px; }
+iframe.preview { width: 100%; border: 1px solid var(--line); border-radius: 12px; background: #fff; min-height: 400px; }
+textarea, input[type=text], input[type=password], select { width: 100%; font: inherit; color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+textarea { min-height: 96px; resize: vertical; }
+label { font-size: 0.85rem; color: var(--muted); display: grid; gap: 4px; }
+.bar { position: sticky; bottom: 0; background: var(--bg); border-top: 1px solid var(--line); margin-top: 16px;
+  padding: 12px 0 calc(12px + env(safe-area-inset-bottom, 0px)); }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  background: var(--fg); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 0.9rem; z-index: 10; max-width: 90vw; }
+.meta { color: var(--muted); font-size: 0.82rem; }
+.check { display: flex; gap: 10px; align-items: flex-start; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.check:last-child { border-bottom: 0; }
+.check input { margin-top: 5px; width: 20px; height: 20px; flex: none; }
+.count { min-width: 1.6em; text-align: center; font-weight: 700; color: var(--act); }
+@media (prefers-reduced-motion: no-preference) { .item:active { background: var(--accent-soft); } }
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <button class="ghost" id="back" hidden aria-label="戻る">←</button>
+  <h1 id="title">決裁デスク</h1>
+  <button class="ghost" id="reload" aria-label="更新">更新</button>
+  <button class="ghost" id="settingsBtn" aria-label="設定">設定</button>
+</div></header>
+<main class="wrap" id="view" aria-live="polite"></main>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+"use strict";
+// 本社(非公開)にAI社員の下書き・ネタ帳・体験がある。公開サイトのリポジトリは公開処理の状況を見るだけ
+const OFFICE = "shirokumakaikei/shirokuma-office";
+const SITE_REPO = "shirokumakaikei/shirokumakaikei.github.io";
+const SITE = "https://shirokumakaikei.github.io";
+const API = "https://api.github.com";
+const CATS = ["実務", "キャリア・転職", "試験・学習"];
+const WORKFLOWS = [
+  { repo: OFFICE, file: "nightly.yml", label: "ライター+校閲(今夜の担当)", runnable: true, channelInput: true },
+  { repo: OFFICE, file: "comment.yml", label: "書き直し・英訳", runnable: false },
+  { repo: OFFICE, file: "weekly.yml", label: "アナリスト+編集長", runnable: true },
+  { repo: OFFICE, file: "publish.yml", label: "サイトへの反映", runnable: false },
+  { repo: SITE_REPO, file: "deploy.yml", label: "サイト公開処理", runnable: true },
+];
+const STAGE_LABEL = { ja: "日本語版", en: "英語版", final: "下書き" };
+
+const store = {
+  get(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+let token = store.get("desk.token");
+
+const $ = (s, el = document) => el.querySelector(s);
+const view = $("#view");
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const md = (s) => DOMPurify.sanitize(marked.parse(String(s || "")));
+// 広告の目印はプレビューでは仮の枠で見せる(本物のコードを読み込むと表示回数が計上されるため)
+const adPreview = (s) => String(s || "").replace(/^\[\[ad:([a-z0-9-]+)(:banner)?\]\]\s*$/gm, (_, n, b) => b
+  ? `\n<div class="ad-banner"><div style="display:inline-flex;align-items:center;justify-content:center;width:300px;max-width:100%;height:250px;border:2px dashed #b9c6d6;color:#4a5a70">広告バナー: ${n}</div></div>\n`
+  : `\n<div class="ad-text"><a href="#">広告(文字リンク): ${n}</a></div>\n`);
+const ago = (iso) => {
+  const m = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (m < 60) return `${m}分前`;
+  if (m < 60 * 24) return `${Math.round(m / 60)}時間前`;
+  return `${Math.round(m / 1440)}日前`;
+};
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.hidden = false;
+  clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 3200);
+}
+function b64decode(s) {
+  const bin = atob(s.replace(/\n/g, ""));
+  return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+}
+function b64encode(str) {
+  const bytes = new TextEncoder().encode(str); let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+function twoTap(btn, label, fn) {
+  btn.addEventListener("click", async () => {
+    if (!btn.classList.contains("armed")) {
+      btn.classList.add("armed"); const orig = btn.textContent; btn.textContent = label;
+      setTimeout(() => { btn.classList.remove("armed"); btn.textContent = orig; }, 4000);
+      return;
+    }
+    btn.disabled = true;
+    try { await fn(); } catch (e) { toast(e.message); btn.disabled = false; }
+  });
+}
+
+// ---------- GitHub API ----------
+async function gh(path, opts = {}) {
+  const res = await fetch(API + path, {
+    ...opts,
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28", ...(opts.body ? { "Content-Type": "application/json" } : {}) },
+  });
+  if (res.status === 401) throw new Error("トークンが無効です。設定から入れ直してください");
+  if (!res.ok && res.status !== 204) {
+    let msg = res.statusText; try { msg = (await res.json()).message || msg; } catch {}
+    if (res.status === 403 || res.status === 404) msg += "(トークンの権限と対象リポジトリを確認してください)";
+    throw new Error(`GitHub ${res.status}: ${msg}`);
+  }
+  return res.status === 204 ? null : res.json();
+}
+const R = `/repos/${OFFICE}`;
+const getFile = async (path, ref, repo = OFFICE) => {
+  const j = await gh(`/repos/${repo}/contents/${path}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`);
+  return { text: b64decode(j.content), sha: j.sha };
+};
+const putFile = (path, text, sha, message, branch) =>
+  gh(`${R}/contents/${path}`, { method: "PUT", body: JSON.stringify({ message, content: b64encode(text), sha, ...(branch ? { branch } : {}) }) });
+const putFileTo = (repo, path, text, sha, message) =>
+  gh(`/repos/${repo}/contents/${path}`, { method: "PUT", body: JSON.stringify({ message, content: b64encode(text), ...(sha ? { sha } : {}) }) });
+const labelOf = (p, prefix) => (p.labels.find((l) => l.name.startsWith(prefix)) || {}).name?.slice(prefix.length) || "";
+
+// 媒体の一覧(channels/*/channel.yml)
+let channelsCache = null;
+async function loadChannels() {
+  if (channelsCache) return channelsCache;
+  const dirs = (await gh(`${R}/contents/channels`)).filter((d) => d.type === "dir" && !d.name.startsWith("_"));
+  const list = await Promise.all(dirs.map(async (d) => {
+    try {
+      const y = (await getFile(`channels/${d.name}/channel.yml`)).text;
+      const get = (k) => (y.match(new RegExp(`^${k}:\\s*(.+)$`, "m")) || [])[1]?.replace(/\s+#.*$/, "").trim();
+      return { id: d.name, name: get("name") || d.name, enabled: get("enabled") === "true",
+               types: /^types:/m.test(y), categories: /^categories:/m.test(y), twoStage: get("two_stage") === "true" };
+    } catch { return null; }
+  }));
+  channelsCache = list.filter(Boolean);
+  return channelsCache;
+}
+const chName = (id) => (channelsCache || []).find((c) => c.id === id)?.name || id;
+
+// ---------- 画面遷移 ----------
+const history_ = [];
+let current = null;
+function go(fn, title, push = true) {
+  if (push && current) history_.push(current);
+  current = { fn, title };
+  $("#title").textContent = title; $("#back").hidden = history_.length === 0;
+  view.innerHTML = '<p class="empty">読み込み中…</p>';
+  window.scrollTo(0, 0);
+  fn().catch((e) => { view.innerHTML = `<div class="card pad"><p>${esc(e.message)}</p></div>`; });
+}
+$("#back").onclick = () => { const p = history_.pop(); if (p) go(p.fn, p.title, false); };
+$("#reload").onclick = () => { channelsCache = null; current && go(current.fn, current.title, false); };
+$("#settingsBtn").onclick = () => go(settings, "設定");
+const home = () => { history_.length = 0; go(inbox, "決裁デスク", false); };
+
+// ---------- 設定 ----------
+async function settings() {
+  view.innerHTML = `
+  <h2>このブラウザに保存するトークン</h2>
+  <div class="card pad stack">
+    <p class="meta">GitHub の fine-grained token を入れてください。保存先はこの端末のブラウザだけで、GitHubへの操作にだけ使います。</p>
+    <label>トークン<input type="password" id="tok" autocomplete="off" value="${token ? "••••••••" : ""}"></label>
+    <div class="row"><button class="act" id="save">保存</button><button class="danger" id="logout">この端末から削除</button></div>
+    <details><summary class="meta">トークンの作り方</summary>
+      <ol class="meta">
+        <li>GitHub → Settings → Developer settings → Fine-grained tokens</li>
+        <li>Resource owner: <b>shirokumakaikei</b> / Repository access: <b>shirokuma-office</b> と <b>shirokumakaikei.github.io</b></li>
+        <li>Permissions: Contents・Pull requests・Issues・Actions を Read and write</li>
+      </ol></details>
+  </div>
+  <h2>スマホに通知を出すには</h2>
+  <div class="card pad meta">GitHub アプリで <b>shirokuma-office</b> を Watch → All Activity にすると、下書きができたときに通知が来ます。</div>`;
+  $("#save").onclick = async () => {
+    const v = $("#tok").value.trim();
+    if (!v || v.startsWith("•")) return toast("トークンを入力してください");
+    token = v;
+    try { await gh(R); store.set("desk.token", v); toast("保存しました"); home(); }
+    catch (e) { token = store.get("desk.token"); toast(e.message); }
+  };
+  $("#logout").onclick = () => { store.del("desk.token"); token = ""; toast("この端末から削除しました"); settings(); };
+}
+
+// ---------- 受信箱 ----------
+async function inbox() {
+  if (!token) return settings();
+  const [pulls, ops, reports, runs, siteRuns, chans] = await Promise.all([
+    gh(`${R}/pulls?state=open&per_page=50`),
+    gh(`${R}/issues?labels=ops&state=open&per_page=5`),
+    gh(`${R}/issues?labels=analyst-report&state=all&per_page=1`),
+    gh(`${R}/actions/runs?per_page=40`).catch(() => ({ workflow_runs: [] })),
+    gh(`/repos/${SITE_REPO}/actions/runs?per_page=10`).catch(() => ({ workflow_runs: [] })),
+    loadChannels().catch(() => []),
+  ]);
+  const has = (p, l) => p.labels.some((x) => x.name === l);
+  const todo = [
+    ...pulls.filter((p) => labelOf(p, "channel:") && !has(p, "editor")).map((p) => {
+      const ch = labelOf(p, "channel:"), st = labelOf(p, "stage:") || "final";
+      return { kind: st === "ja" ? "editor" : "draft", chip: `${chName(ch)}・${STAGE_LABEL[st] || st}`,
+               t: p.title.replace(/^\[[^\]]*\]\s*/, ""), m: ago(p.updated_at || p.created_at),
+               open: () => go(() => draft(p.number), STAGE_LABEL[st] || "下書き") };
+    }),
+    ...pulls.filter((p) => has(p, "editor")).map((p) => ({ kind: "editor", chip: `編集長・${chName(labelOf(p, "channel:"))}`,
+      t: p.title.replace(/^\[編集長\]\s*/, ""), m: ago(p.created_at), open: () => go(() => proposal(p.number), "ネタの提案") })),
+    ...ops.map((i) => ({ kind: "ops", chip: "運用", t: i.title, m: `${ago(i.updated_at)} / コメント${i.comments}件`,
+      open: () => go(() => opsView(i.number), "運用のお知らせ") })),
+  ];
+  const lastRun = (w) => ((w.repo === OFFICE ? runs : siteRuns).workflow_runs || []).find((r) => r.path?.endsWith("/" + w.file));
+  const runChip = (r) => {
+    if (!r) return '<span class="chip idle">未実行</span>';
+    if (r.status !== "completed") return '<span class="chip run">実行中</span>';
+    if (r.conclusion === "success") return '<span class="chip ok">完了</span>';
+    if (r.conclusion === "skipped" || r.conclusion === "cancelled") return '<span class="chip idle">スキップ</span>';
+    return '<span class="chip ng">失敗</span>';
+  };
+  const enabled = chans.filter((c) => c.enabled);
+  const rep = reports[0];
+  view.innerHTML = `
+  <h2>要対応 <span class="count">${todo.length}</span></h2>
+  <div class="card list" id="todo">${todo.length ? "" : '<p class="empty">いま判断が必要なものはありません。</p>'}</div>
+  <h2>週報</h2>
+  <div class="card list">${rep ? `<button class="item" id="rep"><div class="main"><div class="t">${esc(rep.title)}</div><div class="m">${ago(rep.created_at)}</div></div>›</button>` : '<p class="empty">まだ週報はありません。</p>'}</div>
+  <h2>AI社員の稼働</h2>
+  <div class="card list">${WORKFLOWS.map((w, i) => { const r = lastRun(w); return `
+    <div class="item" style="cursor:default;flex-wrap:wrap"><div class="main"><div class="t">${w.label}</div>
+      <div class="m">${r ? ago(r.created_at) : "記録なし"}${r && r.html_url ? ` ・ <a href="${esc(r.html_url)}" target="_blank" rel="noopener">ログ</a>` : ""}</div></div>
+      ${runChip(r)}
+      ${w.channelInput ? `<select data-ch="${i}" aria-label="媒体" style="width:auto">${enabled.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")}</select>` : ""}
+      ${w.runnable ? `<button class="sub" data-run="${i}">今すぐ</button>` : ""}</div>`; }).join("")}</div>
+  <h2>方向を決める</h2>
+  <div class="card list">
+    <button class="item" id="addTopic"><div class="main"><div class="t">ネタを追加する</div><div class="m">媒体を選んで、次に書かせるテーマを入れる</div></div>›</button>
+    <button class="item" id="queue"><div class="main"><div class="t">ネタ帳を見る</div><div class="m">媒体ごとの、これから書く順番</div></div>›</button>
+    <button class="item" id="addExp"><div class="main"><div class="t">体験を追加する</div><div class="m">全媒体で使える実体験を足す</div></div>›</button>
+    <button class="item" id="ads"><div class="main"><div class="t">広告を管理する</div><div class="m">アフィリエイトの追加・停止・削除(しろくま会計)</div></div>›</button>
+  </div>
+  <p class="meta" style="margin-top:20px"><a href="${SITE}/" target="_blank" rel="noopener">しろくま会計を開く</a> ・ <a href="https://github.com/${OFFICE}" target="_blank" rel="noopener">本社(GitHub)</a></p>`;
+  const list = $("#todo");
+  todo.forEach((x) => {
+    const b = document.createElement("button"); b.className = "item";
+    b.innerHTML = `<span class="chip ${x.kind}">${esc(x.chip)}</span><div class="main"><div class="t">${esc(x.t)}</div><div class="m">${esc(x.m)}</div></div>›`;
+    b.onclick = x.open; list.appendChild(b);
+  });
+  if (rep) $("#rep").onclick = () => go(() => report(rep.number), "週報");
+  view.querySelectorAll("[data-run]").forEach((b) => twoTap(b, "実行する", async () => {
+    const w = WORKFLOWS[+b.dataset.run];
+    const sel = view.querySelector(`[data-ch="${b.dataset.run}"]`);
+    const body = { ref: "main", ...(w.channelInput && sel ? { inputs: { channel: sel.value } } : {}) };
+    await gh(`/repos/${w.repo}/actions/workflows/${w.file}/dispatches`, { method: "POST", body: JSON.stringify(body) });
+    toast("実行を依頼しました。数十秒後に「更新」で状況が出ます"); b.textContent = "依頼済み";
+  }));
+  $("#addTopic").onclick = () => go(addTopic, "ネタを追加");
+  $("#queue").onclick = () => go(queueView, "ネタ帳");
+  $("#addExp").onclick = () => go(addExperience, "体験を追加");
+  $("#ads").onclick = () => go(adsView, "広告");
+}
+
+// ---------- 下書き ----------
+function splitFront(text) {
+  const m = text.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  if (!m) return { meta: {}, body: text };
+  const meta = {};
+  m[1].split("\n").forEach((l) => { const k = l.match(/^(\w+):\s*(.*)$/); if (k) meta[k[1]] = k[2].replace(/^"(.*)"$/, "$1"); });
+  return { meta, body: m[2] };
+}
+function warningsFrom(report) {
+  const m = String(report || "").match(/### ⚠[^\n]*\n([\s\S]*?)(?=\n#{2,3} |\n*$)/);
+  return m ? m[0] : "";
+}
+async function copyRich(html, plain) {
+  try {
+    if (window.ClipboardItem && navigator.clipboard?.write) {
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/html": new Blob([html], { type: "text/html" }), "text/plain": new Blob([plain], { type: "text/plain" }) })]);
+    } else { await navigator.clipboard.writeText(plain); }
+    toast("コピーしました。投稿画面に貼り付けてください");
+  } catch { toast("コピーできませんでした。プレビューを長押しして全選択→コピーしてください"); }
+}
+async function draft(n) {
+  const [pr, files, comments] = await Promise.all([
+    gh(`${R}/pulls/${n}`), gh(`${R}/pulls/${n}/files?per_page=50`), gh(`${R}/issues/${n}/comments?per_page=50`)]);
+  const ch = labelOf(pr, "channel:") || "site";
+  const st = labelOf(pr, "stage:") || "final";
+  const slug = pr.head.ref.split("/").pop();
+  const pick = (re) => files.map((f) => f.filename).find((f) => re.test(f));
+  const mdPath = st === "ja" ? pick(/\.ja\.md$/) || `drafts/${ch}/${slug}.ja.md`
+                             : pick(new RegExp(`${slug}\\.md$`)) || `drafts/${ch}/${slug}.md`;
+  const htmlPath = st === "en" ? (pick(/\.html$/) || `drafts/${ch}/${slug}.html`) : "";
+  const [file, htmlFile] = await Promise.all([getFile(mdPath, pr.head.ref), htmlPath ? getFile(htmlPath, pr.head.ref).catch(() => null) : null]);
+  const { meta, body } = splitFront(file.text);
+  const latestReport = [...comments].reverse().find((c) => /セルフレビュー|修正しました|利用上限/.test(c.body))?.body || pr.body;
+  const warn = warningsFrom(latestReport);
+  const closed = pr.state !== "open";
+  const isSite = ch === "site";
+  const words = body.match(/[A-Za-z0-9][A-Za-z0-9'’.,%-]*/g)?.length || 0;
+  const size = st === "en" ? `${words}語` : `${body.replace(/\s/g, "").length}字`;
+  let primary = "";
+  if (st === "ja") primary = `<button class="act" id="pub">日本語版OK → 英訳へ</button>`;
+  else if (isSite) primary = `<button class="act" id="pub">公開する</button>`;
+  else primary = `<button class="act" id="pub">投稿済みにする</button>`;
+  view.innerHTML = `
+  <div class="stack" style="margin-top:16px">
+    ${closed ? `<div class="warn">このPRはすでに${pr.merged ? "承認済み" : "閉じられています"}。</div>` : ""}
+    ${warn ? `<div class="warn md">${md(warn)}</div>` : ""}
+    <div class="meta">${esc(chName(ch))} ・ ${esc(STAGE_LABEL[st] || st)} ・ ${esc(meta.date || "")} ・ ${size}</div>
+    ${!isSite && st !== "ja" ? `<div class="row"><button class="sub" id="copy">${htmlFile ? "HTMLをコピー" : "本文をコピー"}</button><span class="meta">コピーして投稿画面に貼り付け、投稿し終えたら「投稿済みにする」</span></div>` : ""}
+    <iframe class="preview" id="pv" title="公開イメージ"></iframe>
+    ${meta.sources ? `<details class="card pad"><summary>一次資料</summary><div class="md">${md(file.text.match(/^sources:\n((?:\s+-.*\n?)+)/m)?.[1] || "")}</div></details>` : ""}
+    <details class="card pad"><summary>校閲の結果をすべて見る</summary><div class="md">${md(latestReport)}</div></details>
+    <details class="card pad"><summary>やりとりの履歴(${comments.length})</summary>
+      <div class="md">${comments.map((c) => `<p class="meta">${esc(c.user.login)} ・ ${ago(c.created_at)}</p>${md(c.body)}`).join("<hr>") || "なし"}</div></details>
+  </div>
+  ${closed ? "" : `
+  <div class="bar"><div class="stack">
+    <textarea id="fix" placeholder="直してほしいことを書く(例:2つ目の見出しの体験談を削って一般論に)"></textarea>
+    <div class="row">${primary}<button class="sub" id="rev">修正を頼む</button><button class="danger" id="drop">ボツ</button></div>
+  </div></div>`}`;
+  const pv = $("#pv");
+  if (htmlFile) {
+    pv.srcdoc = htmlFile.text.replace("<head>", '<head><base target="_blank">');
+  } else if (isSite) {
+    pv.srcdoc = `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+      <base target="_blank"><link rel="stylesheet" href="${SITE}/assets/style.css"></head><body>
+      <section class="hero"><div class="wrap"><h1>${esc(meta.title || slug)}</h1></div></section>
+      <main><div class="wrap">${/\[\[ad:/.test(body) ? '<p class="pr-note">この記事にはプロモーション(広告)を含みます。</p>' : ""}<div class="note"><p><strong>この記事を書いた人</strong></p><p>(テンプレートの著者欄)</p></div>
+      ${md(adPreview(body)).replace(/href="([a-z0-9-]+\.html)"/g, `href="${SITE}/articles/$1"`)}</div></main></body></html>`;
+  } else {
+    pv.srcdoc = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><base target="_blank">
+      <style>body{max-width:680px;margin:24px auto;padding:0 16px;font-family:system-ui,sans-serif;line-height:1.8;color:#172231}</style></head>
+      <body><h1>${esc(meta.title || slug)}</h1>${md(body)}</body></html>`;
+  }
+  pv.onload = () => { try { pv.style.height = pv.contentDocument.documentElement.scrollHeight + 20 + "px"; } catch {} };
+  const cp = $("#copy");
+  if (cp) cp.onclick = () => {
+    if (htmlFile) {
+      const inner = (htmlFile.text.match(/<body>([\s\S]*)<\/body>/) || [])[1] || htmlFile.text;
+      copyRich(inner, pv.contentDocument?.body?.innerText || body);
+    } else copyRich(md(body), `${meta.title || ""}\n\n${body}`);
+  };
+  if (closed) return;
+  if (st === "ja") {
+    twoTap($("#pub"), "英訳を始める", async () => {
+      await gh(`${R}/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body: "/approve-ja\n\n(デスクから承認)" }) });
+      toast("英訳を頼みました。数分後に英語版が届きます"); home();
+    });
+  } else {
+    twoTap($("#pub"), isSite ? "本当に公開する" : "投稿済みにする", async () => {
+      await gh(`${R}/pulls/${n}/merge`, { method: "PUT", body: JSON.stringify({ merge_method: "squash" }) });
+      toast(isSite ? "公開しました。数分でサイトに反映されます" : "投稿済みにしました"); home();
+    });
+  }
+  $("#rev").onclick = async () => {
+    const t = $("#fix").value.trim();
+    if (!t) return toast("直してほしいことを書いてください");
+    $("#rev").disabled = true;
+    try {
+      await gh(`${R}/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body: `/revise ${t}` }) });
+      toast("修正を頼みました。数分後に「更新」で確認できます"); $("#fix").value = "";
+    } catch (e) { toast(e.message); }
+    $("#rev").disabled = false;
+  };
+  twoTap($("#drop"), "本当にボツにする", async () => {
+    await gh(`${R}/pulls/${n}`, { method: "PATCH", body: JSON.stringify({ state: "closed" }) });
+    toast("ボツにしました"); home();
+  });
+}
+
+// ---------- 編集長の提案 ----------
+function queueBlocks(text) {
+  const lines = text.split("\n"); const blocks = []; let cur = null;
+  lines.forEach((l, i) => {
+    const m = l.match(/^  - slug:\s*(\S+)/);
+    if (m) { cur = { slug: m[1], start: i, end: i, fields: {} }; blocks.push(cur); return; }
+    if (cur && /^    \S/.test(l)) {
+      cur.end = i; const f = l.match(/^    (\w+):\s*(.*)$/);
+      if (f) cur.fields[f[1]] = f[2].replace(/^['"](.*)['"]$/, "$1");
+      return;
+    }
+    cur = null;
+  });
+  return { lines, blocks };
+}
+async function proposal(n) {
+  const pr = await gh(`${R}/pulls/${n}`);
+  await loadChannels().catch(() => []);
+  const ch = labelOf(pr, "channel:") || "site";
+  const qpath = `channels/${ch}/queue.yml`;
+  const [q, base] = await Promise.all([getFile(qpath, pr.head.ref), getFile(qpath, pr.base.ref)]);
+  const baseSlugs = new Set(queueBlocks(base.text).blocks.map((b) => b.slug));
+  const added = queueBlocks(q.text).blocks.filter((b) => !baseSlugs.has(b.slug));
+  view.innerHTML = `
+  <p class="meta" style="margin-top:16px">${esc(chName(ch))} のネタ帳への提案です。採用するネタにチェックを付けて「採用する」。</p>
+  <div class="card">${added.map((b) => `
+    <label class="check"><input type="checkbox" checked data-slug="${esc(b.slug)}">
+      <div><div style="font-weight:700;color:var(--fg)">${esc(b.fields.keyword || b.slug)}</div>
+      <div>${esc(b.fields.angle || "")}</div><div class="meta">理由: ${esc(b.fields.reason || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.fields.category ? " ・ " + esc(b.fields.category) : ""}</div></div></label>`).join("") || '<p class="empty">追加されたネタが見つかりません。</p>'}</div>
+  <div class="bar"><div class="row"><button class="act" id="ok">採用する</button><button class="danger" id="ng">全部見送る</button></div></div>`;
+  twoTap($("#ok"), "本当に採用する", async () => {
+    const drop = [...view.querySelectorAll("input[data-slug]")].filter((c) => !c.checked).map((c) => c.dataset.slug);
+    if (drop.length === added.length) throw new Error("1つもチェックがありません。見送るなら「全部見送る」を押してください");
+    if (drop.length) {
+      const cur = await getFile(qpath, pr.head.ref);
+      const { lines, blocks } = queueBlocks(cur.text);
+      const kill = new Set(); blocks.filter((b) => drop.includes(b.slug)).forEach((b) => { for (let i = b.start; i <= b.end; i++) kill.add(i); });
+      await putFile(qpath, lines.filter((_, i) => !kill.has(i)).join("\n"), cur.sha, `見送り: ${drop.join(", ")}`, pr.head.ref);
+    }
+    await gh(`${R}/pulls/${n}/merge`, { method: "PUT", body: JSON.stringify({ merge_method: "squash" }) });
+    toast(`${added.length - drop.length}本をネタ帳に入れました`); home();
+  });
+  twoTap($("#ng"), "本当に見送る", async () => {
+    await gh(`${R}/pulls/${n}`, { method: "PATCH", body: JSON.stringify({ state: "closed" }) });
+    toast("今回の提案は見送りました"); home();
+  });
+}
+
+// ---------- 週報・運用 ----------
+async function report(n) {
+  const i = await gh(`${R}/issues/${n}`);
+  view.innerHTML = `<div class="card pad md" style="margin-top:16px"><p class="meta">${esc(i.title)} ・ ${ago(i.created_at)}</p>${md(i.body)}</div>`;
+}
+async function opsView(n) {
+  const [i, comments] = await Promise.all([gh(`${R}/issues/${n}`), gh(`${R}/issues/${n}/comments?per_page=30`)]);
+  const all = [{ body: i.body, created_at: i.created_at }, ...comments].reverse();
+  view.innerHTML = `
+  <div class="card list" style="margin-top:16px">${all.map((c) => `<div class="pad md" style="border-bottom:1px solid var(--line)"><p class="meta">${ago(c.created_at)}</p>${md(c.body)}</div>`).join("")}</div>
+  <div class="bar"><div class="row">
+    <button class="sub" id="rerun">今夜の担当を今すぐ再実行</button>
+    <button class="act" id="done">確認した(閉じる)</button></div></div>`;
+  twoTap($("#rerun"), "実行する", async () => {
+    await gh(`${R}/actions/workflows/nightly.yml/dispatches`, { method: "POST", body: JSON.stringify({ ref: "main" }) });
+    toast("実行を依頼しました");
+  });
+  $("#done").onclick = async () => {
+    await gh(`${R}/issues/${n}`, { method: "PATCH", body: JSON.stringify({ state: "closed" }) }).catch((e) => toast(e.message));
+    toast("閉じました"); home();
+  };
+}
+
+// ---------- 方向を決める ----------
+const yq = (s) => `"${String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, " ")}"`;
+function channelSelect(chans, id = "ch") {
+  return `<select id="${id}">${chans.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}${c.enabled ? "" : "(停止中)"}</option>`).join("")}</select>`;
+}
+async function queueView() {
+  const chans = await loadChannels();
+  view.innerHTML = `<div style="margin-top:16px"><label>媒体${channelSelect(chans)}</label></div><div id="ql"></div>`;
+  const show = async () => {
+    const ch = $("#ch").value;
+    $("#ql").innerHTML = '<p class="empty">読み込み中…</p>';
+    const [q, files] = await Promise.all([getFile(`channels/${ch}/queue.yml`), gh(`${R}/contents/drafts/${ch}`).catch(() => [])]);
+    const done = new Set((files || []).map((f) => f.name.replace(/\.(ja\.md|md|html)$/, "")));
+    const pending = queueBlocks(q.text).blocks.filter((b) => !done.has(b.slug));
+    $("#ql").innerHTML = `<h2>これから書く順(${pending.length}本)</h2><div class="card list">${pending.map((b, i) => `
+      <div class="item" style="cursor:default"><span class="count">${i + 1}</span><div class="main"><div class="t">${esc(b.fields.keyword || b.slug)}</div>
+      <div class="m">${esc(b.fields.angle || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}</div></div></div>`).join("") || '<p class="empty">ネタ帳は空です。</p>'}</div>`;
+  };
+  $("#ch").onchange = show; await show();
+}
+async function addTopic() {
+  const chans = await loadChannels();
+  view.innerHTML = `
+  <div class="card pad stack" style="margin-top:16px">
+    <label>媒体${channelSelect(chans)}</label>
+    <label>狙う検索キーワード<input type="text" id="kw" placeholder="例:経理 月次 早期化"></label>
+    <label>切り口(どういう話にするか)<textarea id="angle"></textarea></label>
+    <label>この記事で使ってほしい体験(任意)<textarea id="notes"></textarea></label>
+    <label id="catWrap">カテゴリ<select id="cat">${CATS.map((c) => `<option>${c}</option>`).join("")}</select></label>
+    <label id="typeWrap">記事の型<select id="type"><option value="short">short(短記事)</option><option value="main">main(主記事)</option></select></label>
+    <label>順番<select id="pos"><option value="top">次に書かせる</option><option value="end">最後に並べる</option></select></label>
+    <label>URL名(半角英小文字とハイフン、任意)<input type="text" id="slug" placeholder="空欄なら自動"></label>
+  </div>
+  <div class="bar"><button class="act" id="add">ネタ帳に入れる</button></div>`;
+  const sync = () => { const c = chans.find((x) => x.id === $("#ch").value) || {};
+    $("#catWrap").hidden = !c.categories; $("#typeWrap").hidden = !c.types; };
+  $("#ch").onchange = sync; sync();
+  $("#add").onclick = async () => {
+    const ch = $("#ch").value, c = chans.find((x) => x.id === ch) || {};
+    const kw = $("#kw").value.trim(), angle = $("#angle").value.trim();
+    if (!kw || !angle) return toast("キーワードと切り口を入れてください");
+    let slug = $("#slug").value.trim();
+    if (slug && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) return toast("URL名は半角英小文字・数字・ハイフンだけです");
+    if (!slug) { const d = new Date(); slug = `topic-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}-${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`; }
+    $("#add").disabled = true;
+    try {
+      const path = `channels/${ch}/queue.yml`;
+      const q = await getFile(path);
+      if (queueBlocks(q.text).blocks.some((b) => b.slug === slug)) throw new Error("同じURL名のネタがすでにあります");
+      const block = [`  - slug: ${slug}`];
+      if (c.types) block.push(`    type: ${$("#type").value}`);
+      block.push(`    keyword: ${yq(kw)}`, `    angle: ${yq(angle)}`);
+      if (c.categories) block.push(`    category: ${yq($("#cat").value)}`);
+      block.push(`    notes: ${yq($("#notes").value.trim())}`);
+      let lines = q.text.replace(/\n+$/, "").replace(/^topics:\s*\[\]\s*$/m, "topics:").split("\n");
+      if ($("#pos").value === "top") {
+        const at = lines.findIndex((l) => /^topics:/.test(l));
+        lines.splice(at + 1, 0, ...block);
+      } else lines.push(...block);
+      await putFile(path, lines.join("\n") + "\n", q.sha, `ネタ追加(${ch}): ${kw}`);
+      toast("ネタ帳に入れました"); home();
+    } catch (e) { toast(e.message); $("#add").disabled = false; }
+  };
+}
+async function addExperience() {
+  view.innerHTML = `
+  <div class="card pad stack" style="margin-top:16px">
+    <p class="meta">記事に「自分の体験」として書いてよいエピソードを1つずつ足します(全媒体共通・非公開)。</p>
+    <label>体験<textarea id="exp" placeholder="例:無予告調査の当日、最初に見られたのは現金と帳簿の突き合わせだった"></textarea></label>
+  </div>
+  <div class="bar"><button class="act" id="add">追加する</button></div>`;
+  $("#add").onclick = async () => {
+    const t = $("#exp").value.trim().replace(/\n+/g, " ");
+    if (!t) return toast("体験を書いてください");
+    if (/—/.test(t)) return toast("エムダッシュは使えません");
+    $("#add").disabled = true;
+    try {
+      const f = await getFile("shared/experiences.md");
+      const head = "## 追加メモ(決裁デスクから)";
+      let text = f.text.replace(/\n+$/, "");
+      if (!text.includes(head)) text += `\n\n${head}`;
+      text += `\n- ${t}\n`;
+      await putFile("shared/experiences.md", text, f.sha, "体験を追加");
+      toast("追加しました。次の記事から使われます"); $("#exp").value = ""; $("#add").disabled = false;
+    } catch (e) { toast(e.message); $("#add").disabled = false; }
+  };
+}
+
+
+// ---------- 広告(公開サイトの content/affiliates.yml) ----------
+const ADS_PATH = "content/affiliates.yml";
+const AD_FIELDS = [
+  ["name", "サービス名", "例:ツインプロ", true],
+  ["about", "どんなサービスか(1行)", "例:会計士・会計業界向けの転職支援サービス", true],
+  ["fit", "向く読者", "例:会計業界での転職を考える経験者", true],
+  ["avoid", "使わない場面(任意)", "例:未経験向けの記事", false],
+  ["lead_hint", "置き方のヒント(任意)", "例:求人を見たい人向けに一言添えてから置く", false],
+];
+const unq = (v) => { v = v.trim(); if (/^".*"$/.test(v)) return v.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\"); if (/^'.*'$/.test(v)) return v.slice(1, -1).replace(/''/g, "'"); return v; };
+function parseAds(text) {
+  const lines = text.split("\n");
+  const at = lines.findIndex((l) => /^ads:\s*$/.test(l));
+  const head = (at < 0 ? lines : lines.slice(0, at)).join("\n").replace(/\n+$/, "");
+  const ads = [];
+  let cur = null, block = null;
+  for (const l of at < 0 ? [] : lines.slice(at + 1)) {
+    let m;
+    if (block && (/^ {6}/.test(l) || l.trim() === "")) { cur[block].push(l.slice(6)); continue; }
+    block = null;
+    if ((m = l.match(/^  ([a-z0-9-]+):\s*$/))) { cur = { id: m[1], active: true, text: [], banner: [] }; ads.push(cur); continue; }
+    if (!cur) continue;
+    if ((m = l.match(/^    (text|banner):\s*\|-?\s*$/))) { block = m[1]; cur[block] = []; continue; }
+    if ((m = l.match(/^    ([a-z_]+):\s*(.*)$/))) cur[m[1]] = m[1] === "active" ? m[2].trim() !== "false" : unq(m[2]);
+  }
+  for (const a of ads) for (const k of ["text", "banner"]) a[k] = (Array.isArray(a[k]) ? a[k].join("\n") : a[k] || "").trim();
+  return { head, ads };
+}
+function dumpAds({ head, ads }) {
+  const out = [head, "ads:"];
+  for (const a of ads) {
+    out.push(`  ${a.id}:`, `    active: ${a.active ? "true" : "false"}`);
+    for (const [k] of AD_FIELDS) if (a[k]) out.push(`    ${k}: ${yq(a[k])}`);
+    for (const k of ["text", "banner"]) if (a[k]) out.push(`    ${k}: |`, ...a[k].trim().split("\n").map((l) => "      " + l.trimEnd()));
+  }
+  return out.join("\n") + "\n";
+}
+async function saveAds(data, sha, msg) {
+  await putFileTo(SITE_REPO, ADS_PATH, dumpAds(data), sha, msg);
+}
+async function adsView() {
+  const f = await getFile(ADS_PATH, "", SITE_REPO);
+  const data = parseAds(f.text);
+  const live = data.ads.filter((a) => a.active).length;
+  view.innerHTML = `
+  <p class="meta" style="margin-top:16px">ライターは配信中の広告から、記事に合うものを最大3種類選んで入れます。停止・削除すると、新しい記事で使われなくなり、公開済みの記事からも数分で消えます。</p>
+  <h2>登録中の広告 <span class="count">${live}/${data.ads.length}</span></h2>
+  <div class="card list" id="adl">${data.ads.length ? "" : '<p class="empty">まだ広告はありません。</p>'}</div>
+  <div class="bar"><button class="act" id="newAd">広告を追加する</button></div>`;
+  data.ads.forEach((a, i) => {
+    const d = document.createElement("div"); d.className = "item"; d.style.cursor = "default"; d.style.flexWrap = "wrap";
+    d.innerHTML = `<span class="chip ${a.active ? "ok" : "idle"}">${a.active ? "配信中" : "停止中"}</span>
+      <div class="main" style="flex:1 1 60%;min-width:0"><div class="t">${esc(a.name || a.id)}</div>
+      <div class="m">${esc(a.about || "")}<br>目印: [[ad:${esc(a.id)}]] ・ ${[a.text && "文字リンク", a.banner && "バナー"].filter(Boolean).join("・")}</div></div>
+      <div class="row" style="flex-basis:100%;justify-content:flex-end"><button class="sub" data-edit>編集</button><button class="sub" data-toggle>${a.active ? "停止する" : "再開する"}</button><button class="danger" data-del>削除</button></div>`;
+    d.querySelector("[data-edit]").onclick = () => go(() => adForm(a.id), "広告を編集");
+    d.querySelector("[data-toggle]").onclick = async (e) => {
+      e.target.disabled = true;
+      try { a.active = !a.active; await saveAds(data, f.sha, `広告を${a.active ? "再開" : "停止"}: ${a.name || a.id}`);
+        toast(a.active ? "再開しました" : "停止しました"); go(adsView, "広告", false); }
+      catch (err) { toast(err.message); e.target.disabled = false; }
+    };
+    twoTap(d.querySelector("[data-del]"), "本当に削除", async () => {
+      data.ads.splice(i, 1);
+      await saveAds(data, f.sha, `広告を削除: ${a.name || a.id}`);
+      toast("削除しました"); go(adsView, "広告", false);
+    });
+    $("#adl").appendChild(d);
+  });
+  $("#newAd").onclick = () => go(() => adForm(null), "広告を追加");
+}
+async function adForm(id) {
+  const f = await getFile(ADS_PATH, "", SITE_REPO);
+  const data = parseAds(f.text);
+  const a = id ? data.ads.find((x) => x.id === id) : { active: true };
+  if (!a) throw new Error("その広告は見つかりませんでした");
+  view.innerHTML = `
+  <div class="card pad stack" style="margin-top:16px">
+    <p class="meta">ASP(A8など)で発行したコードを、そのまま貼ってください。コードは書き換えずに記事へ入ります。</p>
+    <label>目印の名前(半角英小文字・数字・ハイフン)<input type="text" id="ad_id" value="${esc(a.id || "")}" ${id ? "disabled" : ""} placeholder="例:twinpro"></label>
+    ${AD_FIELDS.map(([k, label, ph]) => `<label>${label}<input type="text" id="ad_${k}" value="${esc(a[k] || "")}" placeholder="${esc(ph)}"></label>`).join("")}
+    <label>文字リンクのコード<textarea id="ad_text" rows="4" placeholder="&lt;a href=...&gt;...&lt;/a&gt; と 1x1 の &lt;img&gt; をまとめて貼る">${esc(a.text || "")}</textarea></label>
+    <label>バナーのコード(任意)<textarea id="ad_banner" rows="4">${esc(a.banner || "")}</textarea></label>
+  </div>
+  <div class="bar"><button class="act" id="saveAd">${id ? "保存する" : "追加する"}</button></div>`;
+  $("#saveAd").onclick = async () => {
+    const v = (k) => $(`#ad_${k}`).value.trim();
+    const nid = id || v("id");
+    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(nid)) return toast("目印の名前は半角英小文字・数字・ハイフンだけです");
+    if (!id && data.ads.some((x) => x.id === nid)) return toast("同じ名前の広告がすでにあります");
+    for (const [k, label, , req] of AD_FIELDS) if (req && !v(k)) return toast(`${label}を入れてください`);
+    if (!v("text") && !v("banner")) return toast("文字リンクかバナーのコードを貼ってください");
+    for (const k of ["text", "banner"]) {
+      const c = v(k);
+      if (!c) continue;
+      if (/<script/i.test(c)) return toast("<script> を含むコードは使えません。A8などの「テキスト」「バナー」のコードを選んでください");
+      if (!/<a\s[^>]*href=/i.test(c)) return toast(`${k === "text" ? "文字リンク" : "バナー"}のコードに <a href=...> がありません`);
+    }
+    const next = { ...a, id: nid };
+    for (const [k] of AD_FIELDS) next[k] = v(k);
+    next.text = v("text"); next.banner = v("banner");
+    if (id) data.ads[data.ads.findIndex((x) => x.id === id)] = next; else data.ads.push(next);
+    $("#saveAd").disabled = true;
+    try {
+      await saveAds(data, f.sha, `広告を${id ? "更新" : "追加"}: ${next.name}`);
+      toast("保存しました。今夜の記事から使われます"); history_.pop(); go(adsView, "広告", false);
+    } catch (e) { toast(e.message); $("#saveAd").disabled = false; }
+  };
+}
+
+// Slack の「デスクで読む」から #pr-123 で直接開く
+async function openFromHash() {
+  const m = location.hash.match(/^#pr-(\d+)$/);
+  if (!m || !token) return false;
+  history.replaceState(null, "", location.pathname);
+  try {
+    await loadChannels().catch(() => []);
+    const pr = await gh(`${R}/pulls/${m[1]}`);
+    current = { fn: inbox, title: "決裁デスク" };
+    const isEditor = pr.labels.some((l) => l.name === "editor");
+    go(() => (isEditor ? proposal(+m[1]) : draft(+m[1])), isEditor ? "ネタの提案" : "下書き");
+    return true;
+  } catch (e) { toast(e.message); return false; }
+}
+openFromHash().then((ok) => { if (!ok) home(); });
+</script>
+</body>
+</html>

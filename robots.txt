@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /desk/
+
+Sitemap: https://shirokumakaikei.github.io/sitemap.xml

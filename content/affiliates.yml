@@ -1,0 +1,36 @@
+# アフィリエイト広告の一覧。決裁デスクの「広告を管理する」から追加・停止・削除できる。
+# 記事本文には広告コードを書かず、目印を1行で置く。
+#   [[ad:名前]]          文字リンク
+#   [[ad:名前:banner]]   バナー
+# 1記事に3種類まで。文字リンクは合計3つ(同じサービスは1回)、バナーは1つまで。
+# ビルド時にコードへ置き換わり、記事冒頭に「プロモーションを含みます」が自動で付く。
+# active: false にすると、新しい記事で使われなくなり、公開済みの記事からも次の公開処理で消える。
+# ASPから渡されたコードは改変しない(そのまま貼る)。
+ads:
+  twinpro:
+    active: true
+    name: ツインプロ
+    about: 会計士・会計業界向けの転職支援サービス
+    fit: 会計士・税理士・経理など会計業界での転職を考える読者
+    lead_hint: 会計業界に絞って求人や年収の相場を確かめたい人向けに、一言添えてから置く
+    text: |
+      <a href="https://px.a8.net/svt/ejp?a8mat=4B648F+6CMHUI+5B0Y+BWVTE" rel="nofollow">会計士転職ならツインプロ</a>
+      <img border="0" width="1" height="1" src="https://www14.a8.net/0.gif?a8mat=4B648F+6CMHUI+5B0Y+BWVTE" alt="">
+    banner: |
+      <a href="https://px.a8.net/svt/ejp?a8mat=4B648F+6CMHUI+5B0Y+BXYE9" rel="nofollow">
+      <img border="0" width="300" height="250" alt="" src="https://www21.a8.net/svt/bgt?aid=260625903384&wid=002&eno=01&mid=s00000024757002006000&mc=1"></a>
+      <img border="0" width="1" height="1" src="https://www10.a8.net/0.gif?a8mat=4B648F+6CMHUI+5B0Y+BXYE9" alt="">
+  neo:
+    active: true
+    name: 第二新卒エージェントneo
+    about: 第二新卒・既卒・高卒・大学中退など若手向けの就職支援サービス
+    fit: 20代で経理・事務への就職や未経験からの転職を考える読者(学歴や職歴に不安がある人を含む)
+    avoid: 会計士・税理士・経験者向けのキャリアの記事
+    lead_hint: 未経験や若手で経理・事務の仕事を探す人向けに、一言添えてから置く
+    text: |
+      <a href="https://px.a8.net/svt/ejp?a8mat=4B7QWX+XXR16+3Y6M+63OYA" rel="nofollow">大学中退、中卒、高卒の就職なら、第二新卒エージェントneo</a>
+      <img border="0" width="1" height="1" src="https://www17.a8.net/0.gif?a8mat=4B7QWX+XXR16+3Y6M+63OYA" alt="">
+    banner: |
+      <a href="https://px.a8.net/svt/ejp?a8mat=4B7QWX+XXR16+3Y6M+64Z8X" rel="nofollow">
+      <img border="0" width="100" height="100" alt="" src="https://www25.a8.net/svt/bgt?aid=260701953057&wid=002&eno=01&mid=s00000018427001031000&mc=1"></a>
+      <img border="0" width="1" height="1" src="https://www13.a8.net/0.gif?a8mat=4B7QWX+XXR16+3Y6M+64Z8X" alt="">
