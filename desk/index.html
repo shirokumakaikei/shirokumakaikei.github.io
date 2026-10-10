@@ -490,8 +490,9 @@ async function proposal(n) {
   <div class="card">${added.map((b) => `
     <label class="check"><input type="checkbox" checked data-slug="${esc(b.slug)}">
       <div><div style="font-weight:700;color:var(--fg)">${esc(b.fields.keyword || b.slug)}</div>
-      <div>${esc(b.fields.angle || "")}</div><div class="meta">理由: ${esc(b.fields.reason || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.fields.category ? " ・ " + esc(b.fields.category) : ""}${b.fields.research === "true" ? " ・ 一次情報で確認" : ""}</div>${b.refs.length ? `<div class="meta">${refLinks(b.refs)}</div>` : ""}</div></label>`).join("") || '<p class="empty">追加されたネタが見つかりません。</p>'}</div>
+      <div>${esc(b.fields.angle || "")}</div><div class="meta">理由: ${esc(b.fields.reason || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.fields.category ? " ・ " + esc(b.fields.category) : ""}${b.fields.research === "true" ? " ・ 一次情報で確認" : ""}</div>${b.fields.basis ? `<div class="meta">根拠: ${esc(b.fields.basis)}</div>` : ""}${b.refs.length ? `<div class="meta">${refLinks(b.refs)}</div>` : ""}</div></label>`).join("") || '<p class="empty">追加されたネタが見つかりません。</p>'}</div>
   <p class="meta">外したネタは「見送り」として記録し、編集長は同じネタを出し直しません。</p>
+  ${(pr.body || "").includes("### どう出したか") ? `<details class="card pad md" style="margin-top:12px"><summary><b>どう出したか</b>(材料とチェックの流れ)</summary>${md(pr.body.slice(pr.body.indexOf("### どう出したか")).replace(/^### どう出したか\s*/, ""))}</details>` : ""}
   <div class="bar"><div class="row"><button class="act" id="ok">採用する</button><button class="danger" id="ng">全部見送る</button></div></div>`;
   twoTap($("#ok"), "本当に採用する", async () => {
     const drop = [...view.querySelectorAll("input[data-slug]")].filter((c) => !c.checked).map((c) => c.dataset.slug);
