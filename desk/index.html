@@ -453,6 +453,30 @@ function queueBlocks(text) {
 }
 const refLinks = (refs) => (refs || []).filter((u) => /^https:\/\//.test(u)).map((u, i) =>
   `<a href="${esc(u)}" target="_blank" rel="noopener">参考動画${i + 1}</a>`).join(" ");
+// 見送ったネタを channels/<ch>/rejected.yml に残す(編集長が同じネタを出し直さないように)
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+async function addRejected(ch, blocks, branch) {
+  if (!blocks.length) return;
+  const path = `channels/${ch}/rejected.yml`;
+  const f = await getFile(path, branch).catch(() => ({ text: "# 見送ったネタ。編集長は、ここにあるネタと同じ切り口のネタを出さない。\ntopics: []\n", sha: undefined }));
+  const lines = f.text.replace(/\n+$/, "").replace(/^topics:\s*\[\]\s*$/m, "topics:").split("\n");
+  for (const b of blocks) {
+    lines.push(`  - slug: ${b.slug}`, `    keyword: ${yq(b.fields.keyword || "")}`, `    angle: ${yq(b.fields.angle || "")}`, `    date: ${today()}`);
+  }
+  await putFile(path, lines.join("\n") + "\n", f.sha, `見送りを記録(${ch}): ${blocks.map((b) => b.slug).join(", ")}`, branch);
+}
+// ネタの重なり(本社の tools/topics.py の「キーワードがほぼ同じ」と同じ考え方の簡易版)
+const KW_STOP = new Set(["japan", "japanese", "tax", "taxes", "the", "a", "an", "in", "for", "of", "and", "to", "on", "how", "what", "is", "vs", "とは", "方法", "やり方", "違い", "まとめ"]);
+const kwTokens = (k) => new Set(String(k || "").normalize("NFKC").toLowerCase().split(/[\s、,/・]+/).filter((t) => t && !KW_STOP.has(t)));
+function nearTopic(kw, blocks) {
+  const a = kwTokens(kw); if (!a.size) return null;
+  for (const b of blocks) {
+    const c = kwTokens(b.fields.keyword); if (!c.size) continue;
+    const inter = [...a].filter((t) => c.has(t)).length, small = Math.min(a.size, c.size);
+    if (inter / new Set([...a, ...c]).size >= 0.6 || (small >= 2 && inter === small)) return b;
+  }
+  return null;
+}
 async function proposal(n) {
   const pr = await gh(`${R}/pulls/${n}`);
   await loadChannels().catch(() => []);
@@ -467,6 +491,7 @@ async function proposal(n) {
     <label class="check"><input type="checkbox" checked data-slug="${esc(b.slug)}">
       <div><div style="font-weight:700;color:var(--fg)">${esc(b.fields.keyword || b.slug)}</div>
       <div>${esc(b.fields.angle || "")}</div><div class="meta">理由: ${esc(b.fields.reason || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.fields.category ? " ・ " + esc(b.fields.category) : ""}${b.fields.research === "true" ? " ・ 一次情報で確認" : ""}</div>${b.refs.length ? `<div class="meta">${refLinks(b.refs)}</div>` : ""}</div></label>`).join("") || '<p class="empty">追加されたネタが見つかりません。</p>'}</div>
+  <p class="meta">外したネタは「見送り」として記録し、編集長は同じネタを出し直しません。</p>
   <div class="bar"><div class="row"><button class="act" id="ok">採用する</button><button class="danger" id="ng">全部見送る</button></div></div>`;
   twoTap($("#ok"), "本当に採用する", async () => {
     const drop = [...view.querySelectorAll("input[data-slug]")].filter((c) => !c.checked).map((c) => c.dataset.slug);
@@ -476,11 +501,13 @@ async function proposal(n) {
       const { lines, blocks } = queueBlocks(cur.text);
       const kill = new Set(); blocks.filter((b) => drop.includes(b.slug)).forEach((b) => { for (let i = b.start; i <= b.end; i++) kill.add(i); });
       await putFile(qpath, lines.filter((_, i) => !kill.has(i)).join("\n"), cur.sha, `見送り: ${drop.join(", ")}`, pr.head.ref);
+      await addRejected(ch, added.filter((b) => drop.includes(b.slug)), pr.head.ref);
     }
     await gh(`${R}/pulls/${n}/merge`, { method: "PUT", body: JSON.stringify({ merge_method: "squash" }) });
     toast(`${added.length - drop.length}本をネタ帳に入れました`); home();
   });
   twoTap($("#ng"), "本当に見送る", async () => {
+    await addRejected(ch, added);
     await gh(`${R}/pulls/${n}`, { method: "PATCH", body: JSON.stringify({ state: "closed" }) });
     toast("今回の提案は見送りました"); home();
   });
@@ -562,6 +589,13 @@ async function addTopic() {
       const path = `channels/${ch}/queue.yml`;
       const q = await getFile(path);
       if (queueBlocks(q.text).blocks.some((b) => b.slug === slug)) throw new Error("同じURL名のネタがすでにあります");
+      const rej = await getFile(`channels/${ch}/rejected.yml`).catch(() => ({ text: "" }));
+      const near = nearTopic(kw, [...queueBlocks(q.text).blocks, ...queueBlocks(rej.text).blocks]);
+      const warnKey = `${ch}|${kw}`;
+      if (near && addTopic.warned !== warnKey) {
+        addTopic.warned = warnKey;
+        throw new Error(`「${near.fields.keyword}」(${near.slug})と近いネタがすでにあります(ネタ帳か見送り)。それでも入れるなら、もう一度押してください`);
+      }
       const block = [`  - slug: ${slug}`];
       if (c.types) block.push(`    type: ${$("#type").value}`);
       block.push(`    keyword: ${yq(kw)}`, `    angle: ${yq(angle)}`);
