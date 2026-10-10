@@ -189,7 +189,7 @@ async function loadChannels() {
       const get = (k) => (y.match(new RegExp(`^${k}:\\s*(.+)$`, "m")) || [])[1]?.replace(/\s+#.*$/, "").trim();
       return { id: d.name, name: get("name") || d.name, enabled: get("enabled") === "true",
                types: /^types:/m.test(y), categories: /^categories:/m.test(y), twoStage: get("two_stage") === "true",
-               research: get("research") || "false" };
+               research: get("research") || "false", publish: get("publish") || "" };
     } catch { return null; }
   }));
   channelsCache = list.filter(Boolean);
@@ -363,8 +363,13 @@ async function draft(n) {
   const mdPath = st === "ja" ? pick(/\.ja\.md$/) || `drafts/${ch}/${slug}.ja.md`
                              : pick(new RegExp(`${slug}\\.md$`)) || `drafts/${ch}/${slug}.md`;
   const htmlPath = st === "en" ? (pick(/\.html$/) || `drafts/${ch}/${slug}.html`) : "";
-  const [file, htmlFile, factFile] = await Promise.all([getFile(mdPath, pr.head.ref), htmlPath ? getFile(htmlPath, pr.head.ref).catch(() => null) : null,
-    getFile(`facts/${ch}/${slug}.json`, pr.head.ref).catch(() => null)]);
+  await loadChannels().catch(() => []);
+  const outbox = (channelsCache || []).find((c) => c.id === ch)?.publish === "outbox";
+  const thumbPath = pick(/\.thumb\.png$/) || "";
+  const [file, htmlFile, factFile, thumbFile] = await Promise.all([getFile(mdPath, pr.head.ref), htmlPath ? getFile(htmlPath, pr.head.ref).catch(() => null) : null,
+    getFile(`facts/${ch}/${slug}.json`, pr.head.ref).catch(() => null),
+    thumbPath ? gh(`${R}/contents/${thumbPath}?ref=${encodeURIComponent(pr.head.ref)}`).catch(() => null) : null]);
+  const thumbSrc = thumbFile?.content ? `data:image/png;base64,${thumbFile.content.replace(/\n/g, "")}` : "";
   let facts = null; try { facts = factFile ? JSON.parse(factFile.text) : null; } catch {}
   const { meta, body } = splitFront(file.text);
   const latestReport = [...comments].reverse().find((c) => /セルフレビュー|修正しました|利用上限/.test(c.body))?.body || pr.body;
@@ -376,6 +381,7 @@ async function draft(n) {
   let primary = "";
   if (st === "ja") primary = `<button class="act" id="pub">日本語版OK → 英訳へ</button>`;
   else if (isSite) primary = `<button class="act" id="pub">公開する</button>`;
+  else if (outbox) primary = `<button class="act" id="pub">承認する(note 登録待ちへ)</button>`;
   else primary = `<button class="act" id="pub">投稿済みにする</button>`;
   view.innerHTML = `
   <div class="stack" style="margin-top:16px">
@@ -383,7 +389,11 @@ async function draft(n) {
     ${warn ? `<div class="warn md">${md(warn)}</div>` : ""}
     ${facts && facts.claims.some((c) => c.verdict === "wrong") ? '<div class="warn">ファクトチェックで<b>誤り</b>が残っています(要確認)。下の表で出典と照らしてください。</div>' : ""}
     <div class="meta">${esc(chName(ch))} ・ ${esc(STAGE_LABEL[st] || st)} ・ ${esc(meta.date || "")} ・ ${size}</div>
-    ${!isSite && st !== "ja" ? `<div class="row"><button class="sub" id="copy">${htmlFile ? "HTMLをコピー" : "本文をコピー"}</button><span class="meta">コピーして投稿画面に貼り付け、投稿し終えたら「投稿済みにする」</span></div>` : ""}
+    ${thumbSrc ? `<div class="card pad stack"><div class="meta">見出し画像(サムネ)${meta.thumb_title ? ` ・ 「${esc(String(meta.thumb_title).replace(/\\n|\n/g, " / "))}」` : ""}</div>
+      <img src="${thumbSrc}" alt="見出し画像のプレビュー" style="width:100%;height:auto;border-radius:6px;border:1px solid var(--line)">
+      <div class="meta">${outbox ? "承認すると、記事と一緒に note 登録待ちに置かれ、PC の下書き登録で見出し画像として設定されます。" : ""}</div></div>`
+      : (meta.thumb_title ? '<div class="warn">サムネ(見出し画像)がまだできていません。報告の「⚠」を確認してください。</div>' : "")}
+    ${!isSite && !outbox && st !== "ja" ? `<div class="row"><button class="sub" id="copy">${htmlFile ? "HTMLをコピー" : "本文をコピー"}</button><span class="meta">コピーして投稿画面に貼り付け、投稿し終えたら「投稿済みにする」</span></div>` : ""}
     <iframe class="preview" id="pv" title="公開イメージ"></iframe>
     ${meta.sources ? `<details class="card pad"><summary>一次資料</summary><div class="md">${md(file.text.match(/^sources:\n((?:\s+-.*\n?)+)/m)?.[1] || "")}</div></details>` : ""}
     ${facts ? factTable(facts) : ""}
@@ -425,9 +435,9 @@ async function draft(n) {
       toast("英訳を頼みました。数分後に英語版が届きます"); home();
     });
   } else {
-    twoTap($("#pub"), isSite ? "本当に公開する" : "投稿済みにする", async () => {
+    twoTap($("#pub"), isSite ? "本当に公開する" : outbox ? "本当に承認する" : "投稿済みにする", async () => {
       await gh(`${R}/pulls/${n}/merge`, { method: "PUT", body: JSON.stringify({ merge_method: "squash" }) });
-      toast(isSite ? "公開しました。数分でサイトに反映されます" : "投稿済みにしました"); home();
+      toast(isSite ? "公開しました。数分でサイトに反映されます" : outbox ? "承認しました。PC の下書き登録で note に入ります" : "投稿済みにしました"); home();
     });
   }
   $("#rev").onclick = async () => {
