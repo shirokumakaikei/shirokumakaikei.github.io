@@ -48,7 +48,7 @@ h2 { font-size: 0.85rem; color: var(--muted); letter-spacing: 0.08em; margin: 28
 .item .m { color: var(--muted); font-size: 0.82rem; }
 .chip { font-size: 0.72rem; padding: 1px 9px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
 .chip.draft { color: var(--act); } .chip.editor { color: var(--accent); } .chip.ops { color: var(--ng); }
-.chip.ok { color: var(--ok); } .chip.run { color: var(--warn); } .chip.ng { color: var(--ng); } .chip.idle { color: var(--muted); }
+.chip.ok { color: var(--ok); } .chip.run { color: var(--warn); } .chip.ng { color: var(--ng); } .chip.idle { color: var(--muted); } .chip.warn { color: var(--warn); }
 .empty { padding: 16px; color: var(--muted); }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .stack { display: grid; gap: 12px; }
@@ -255,7 +255,7 @@ async function inbox() {
   const todo = [
     ...pulls.filter((p) => labelOf(p, "channel:") && !has(p, "editor")).map((p) => {
       const ch = labelOf(p, "channel:"), st = labelOf(p, "stage:") || "final";
-      return { kind: st === "ja" ? "editor" : "draft", chip: `${chName(ch)}・${STAGE_LABEL[st] || st}`,
+      return { kind: st === "ja" ? "editor" : "draft", chip: `${chName(ch)}・${STAGE_LABEL[st] || st}${has(p, "要確認") ? "・要確認" : ""}`,
                t: p.title.replace(/^\[[^\]]*\]\s*/, ""), m: ago(p.updated_at || p.created_at),
                open: () => go(() => draft(p.number), STAGE_LABEL[st] || "下書き") };
     }),
@@ -337,6 +337,22 @@ async function copyRich(html, plain) {
     toast("コピーしました。投稿画面に貼り付けてください");
   } catch { toast("コピーできませんでした。プレビューを長押しして全選択→コピーしてください"); }
 }
+// ファクトチェック表(本社の facts/<媒体>/<slug>.json)。主張 / 判定 / 出典。出典の引用はタップで開く
+const VERDICT = { correct: ["正しい", "ok"], wrong: ["誤り", "ng"], outdated: ["古い", "warn"], unverified: ["未確認", "idle"] };
+function factTable(f) {
+  const cs = f.claims || [];
+  const n = (v) => cs.filter((c) => c.verdict === v).length;
+  const host = (u) => { try { return new URL(u).hostname; } catch { return ""; } };
+  const rows = cs.map((c) => { const [label, cls] = VERDICT[c.verdict] || [c.verdict, "idle"];
+    const src = /^https:\/\//.test(c.source_url) ? `<a href="${esc(c.source_url)}" target="_blank" rel="noopener">${esc(host(c.source_url))}</a>` : "なし";
+    return `<div class="item" style="cursor:default;display:block">
+      <div class="row" style="justify-content:space-between;align-items:flex-start;gap:8px"><div class="t" style="flex:1">${esc(c.claim)}</div><span class="chip ${cls}">${label}</span></div>
+      <div class="m">出典: ${src}${c.verdict !== "correct" && c.note ? ` ・ ${esc(c.note)}` : ""}</div>
+      ${c.quote ? `<details class="m"><summary>出典の引用</summary>「${esc(c.quote)}」${c.fix ? `<br>直し方: ${esc(c.fix)}` : ""}</details>` : ""}</div>`; }).join("");
+  return `<details class="card" ${n("wrong") || n("outdated") ? "open" : ""}><summary class="pad"><b>ファクトチェック表</b>
+    <span class="meta">正しい ${n("correct")} / 誤り ${n("wrong")} / 古い ${n("outdated")} / 未確認 ${n("unverified")}</span></summary>
+    <div class="list">${rows || '<p class="empty">検証が必要な事実の主張はありませんでした。</p>'}</div></details>`;
+}
 async function draft(n) {
   const [pr, files, comments] = await Promise.all([
     gh(`${R}/pulls/${n}`), gh(`${R}/pulls/${n}/files?per_page=50`), gh(`${R}/issues/${n}/comments?per_page=50`)]);
@@ -347,7 +363,9 @@ async function draft(n) {
   const mdPath = st === "ja" ? pick(/\.ja\.md$/) || `drafts/${ch}/${slug}.ja.md`
                              : pick(new RegExp(`${slug}\\.md$`)) || `drafts/${ch}/${slug}.md`;
   const htmlPath = st === "en" ? (pick(/\.html$/) || `drafts/${ch}/${slug}.html`) : "";
-  const [file, htmlFile] = await Promise.all([getFile(mdPath, pr.head.ref), htmlPath ? getFile(htmlPath, pr.head.ref).catch(() => null) : null]);
+  const [file, htmlFile, factFile] = await Promise.all([getFile(mdPath, pr.head.ref), htmlPath ? getFile(htmlPath, pr.head.ref).catch(() => null) : null,
+    getFile(`facts/${ch}/${slug}.json`, pr.head.ref).catch(() => null)]);
+  let facts = null; try { facts = factFile ? JSON.parse(factFile.text) : null; } catch {}
   const { meta, body } = splitFront(file.text);
   const latestReport = [...comments].reverse().find((c) => /セルフレビュー|修正しました|利用上限/.test(c.body))?.body || pr.body;
   const warn = warningsFrom(latestReport);
@@ -363,10 +381,12 @@ async function draft(n) {
   <div class="stack" style="margin-top:16px">
     ${closed ? `<div class="warn">このPRはすでに${pr.merged ? "承認済み" : "閉じられています"}。</div>` : ""}
     ${warn ? `<div class="warn md">${md(warn)}</div>` : ""}
+    ${facts && facts.claims.some((c) => c.verdict === "wrong") ? '<div class="warn">ファクトチェックで<b>誤り</b>が残っています(要確認)。下の表で出典と照らしてください。</div>' : ""}
     <div class="meta">${esc(chName(ch))} ・ ${esc(STAGE_LABEL[st] || st)} ・ ${esc(meta.date || "")} ・ ${size}</div>
     ${!isSite && st !== "ja" ? `<div class="row"><button class="sub" id="copy">${htmlFile ? "HTMLをコピー" : "本文をコピー"}</button><span class="meta">コピーして投稿画面に貼り付け、投稿し終えたら「投稿済みにする」</span></div>` : ""}
     <iframe class="preview" id="pv" title="公開イメージ"></iframe>
     ${meta.sources ? `<details class="card pad"><summary>一次資料</summary><div class="md">${md(file.text.match(/^sources:\n((?:\s+-.*\n?)+)/m)?.[1] || "")}</div></details>` : ""}
+    ${facts ? factTable(facts) : ""}
     <details class="card pad"><summary>校閲の結果をすべて見る</summary><div class="md">${md(latestReport)}</div></details>
     <details class="card pad"><summary>やりとりの履歴(${comments.length})</summary>
       <div class="md">${comments.map((c) => `<p class="meta">${esc(c.user.login)} ・ ${ago(c.created_at)}</p>${md(c.body)}`).join("<hr>") || "なし"}</div></details>
