@@ -65,11 +65,14 @@ iframe.preview { width: 100%; border: 1px solid var(--line); border-radius: 12px
 textarea, input[type=text], input[type=password], select { width: 100%; font: inherit; color: var(--fg); background: var(--bg);
   border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
 textarea { min-height: 96px; resize: vertical; }
-/* 本文を編集: 画面幅いっぱい、保存ボタンは下に固定 */
-.editor { display: block; width: calc(100% + 32px); margin: 0 -16px; min-height: calc(100vh - 230px); font-size: 16px; line-height: 1.75; padding: 12px 16px; border-radius: 0; border-left: 0; border-right: 0; }
+/* 自分で直す: 画面幅いっぱい、保存・やめるは大きくして下に固定 */
+.editor { display: block; width: calc(100% + 32px); margin: 0 -16px; min-height: calc(100vh - 230px); min-height: calc(100dvh - 230px); font-size: 16px; line-height: 1.75; padding: 12px 16px; border-radius: 0; border-left: 0; border-right: 0; }
 .fixbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--bg); border-top: 1px solid var(--line);
   padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); }
-.fixbar .wrap { padding: 0; display: flex; gap: 8px; align-items: center; }
+.fixbar .wrap { padding: 0; display: grid; gap: 8px; }
+.fixbar .btns { display: flex; gap: 10px; }
+.fixbar .btns button { flex: 1; min-height: 54px; font-size: 1.05rem; }
+.fixbar .btns button.act { flex: 2; }
 .vcheck ul { margin: 6px 0 0; padding-left: 18px; } .vcheck li.v-ng { color: var(--ng); } .vcheck li.v-warn { color: var(--warn); } .vcheck li.v-ok { color: var(--ok); }
 [hidden] { display: none !important; }
 label { font-size: 0.85rem; color: var(--muted); display: grid; gap: 4px; }
@@ -379,40 +382,101 @@ async function draftCtx(n) {
   const mdPath = st === "ja" ? pick(/\.ja\.md$/) || `drafts/${ch}/${slug}.ja.md` : pick(new RegExp(`${slug}\\.md$`)) || `drafts/${ch}/${slug}.md`;
   return { pr, ch, st, slug, mdPath, humanPath: mdPath.replace(/\.md$/, ".human.json") };
 }
+// 自分で直せる下書き: しろくま会計と note、Inside Japan Tax は日本語版(stage:ja)だけ
+const canSelfEdit = (ch, st) => ch === "site" || ch === "note" || (ch === "substack" && st === "ja");
+const EDIT_MSG = "オーナーが直接修正";
+// 書きかけはこの端末に残す(閉じても次に開いたとき戻せる)。{sha: 開いた元の版, body, at}
+const editKey = (n, path) => `desk-edit:${n}:${path}`;
+const loadEdit = (k) => { try { return JSON.parse(store.get(k) || "null"); } catch { return null; } };
+const when = (t) => new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 async function editBody(n) {
   const c = await draftCtx(n);
+  if (!canSelfEdit(c.ch, c.st)) throw new Error("この下書きは自分で直す対象ではありません(Inside Japan Tax は日本語版のときだけ)");
   const f = await getFile(c.mdPath, c.pr.head.ref);
   const { front, body } = splitRaw(f.text);
+  const key = editKey(n, c.mdPath);
+  const saved = loadEdit(key);
+  const pending = saved && saved.body !== body ? saved : null;
   view.innerHTML = `
-  <p class="meta" style="margin-top:12px">本文(Markdown)を直接直せます。見出しは「## 」、太字は「**」で囲みます。保存すると、このPRに「デスクで手直し」として記録され、直した段落は次の修正依頼やファクトチェックで AI が書き換えません。</p>
+  <p class="meta" style="margin-top:12px">本文(Markdown)を直接直せます。見出しは「## 」、太字は「**」で囲みます。打った内容はこの端末に自動で残ります。保存すると、このPRに「${EDIT_MSG}」として記録され、直した段落は次の修正依頼やファクトチェックで AI が書き換えません。</p>
+  <div id="resume"></div>
   <textarea class="editor" id="body" spellcheck="false">${esc(body)}</textarea>
-  <div style="height:90px"></div>
-  <div class="fixbar"><div class="wrap"><span class="meta" id="cnt" style="flex:1"></span>
-    <button class="sub" id="cancel">やめる</button><button class="act" id="saveBody">保存</button></div></div>`;
+  <div style="height:140px"></div>
+  <div class="fixbar"><div class="wrap"><div class="row" style="justify-content:space-between"><span class="meta" id="cnt"></span><span class="meta" id="kept"></span></div>
+    <div class="btns"><button class="sub" id="cancel">やめる</button><button class="act" id="saveBody">保存</button></div></div></div>`;
   const ta = $("#body");
   const count = () => { $("#cnt").textContent = `${ta.value.replace(/\s/g, "").length.toLocaleString()}字`; };
-  ta.oninput = count; count();
-  $("#cancel").onclick = () => { $("#back").click(); };
+  const keep = () => {
+    if (ta.value === body) { store.del(key); $("#kept").textContent = ""; return; }
+    store.set(key, JSON.stringify({ sha: f.sha, body: ta.value, at: Date.now() }));  // 開いた版(古い書きかけを開いたときも、いまの版に乗せたことにする)
+    $("#kept").textContent = "書きかけを端末に保存済み";
+  };
+  let timer = 0, touched = false;  // 触っていないうちは端末の書きかけを消さない(開いて閉じただけで古い書きかけが消えないように)
+  ta.oninput = () => { touched = true; count(); clearTimeout(timer); timer = setTimeout(keep, 400); };
+  const flush = () => { clearTimeout(timer); if (touched && document.body.contains(ta)) keep(); };
+  window.addEventListener("pagehide", flush, { once: true });
+  count();
+  const discard = () => { store.del(key); ta.value = body; count(); $("#kept").textContent = ""; $("#resume").innerHTML = ""; toast("書きかけを捨てました"); };
+  if (pending && pending.sha === f.sha) {
+    ta.value = pending.body; count(); $("#kept").textContent = "書きかけを端末に保存済み";
+    $("#resume").innerHTML = `<div class="card pad row" style="justify-content:space-between;margin:8px 0"><span class="meta">${when(pending.at)} の書きかけを戻しました</span><button class="ghost" id="drop">書きかけを捨てる</button></div>`;
+    $("#drop").onclick = discard;
+  } else if (pending) {
+    $("#resume").innerHTML = `<div class="warn stack" style="margin:8px 0"><div>${when(pending.at)} の書きかけがあります。そのあと AI が下書きを更新しました。いまは最新の下書きを表示しています。</div>
+      <div class="row"><button class="sub" id="useOld">書きかけを開く(AI の更新は消える)</button><button class="ghost" id="drop">書きかけを捨てる</button></div></div>`;
+    $("#drop").onclick = discard;
+    $("#useOld").onclick = () => { ta.value = pending.body; count(); $("#resume").innerHTML = ""; touched = true; keep(); toast("書きかけを開きました。保存すると AI の更新は上書きされます"); };
+  }
+  $("#cancel").onclick = () => { flush(); if (ta.value !== body) toast("書きかけはこの端末に残しました"); $("#back").click(); };
   $("#saveBody").onclick = async () => {
     const next = ta.value.replace(/\s+$/, "") + "\n";
     if (next === body) return toast("変更がありません");
+    flush();
     $("#saveBody").disabled = true;
     try {
       const cur = await getFile(c.mdPath, c.pr.head.ref);
-      if (cur.sha !== f.sha) throw new Error("編集中に AI が下書きを更新しました。「やめる」で戻って、開き直してから直してください");
-      await putFile(c.mdPath, front + next, cur.sha, "デスクで手直し", c.pr.head.ref);
+      if (cur.sha !== f.sha) throw new Error("開いたあとに AI が下書きを更新したので、保存していません。書きかけはこの端末に残してあります。「やめる」で戻って開き直してください");
+      await putFile(c.mdPath, front + next, cur.sha, EDIT_MSG, c.pr.head.ref);
       // 手直しした段落を記録する(前からの記録で今も残っているもの + 今回の変更)
       const h = await getFile(c.humanPath, c.pr.head.ref).catch(() => null);
       let rec = { protected: [], history: [] }; try { if (h) rec = { ...rec, ...JSON.parse(h.text) }; } catch {}
-      const keep = [...rec.protected.filter((p) => flat(next).includes(flat(p))), ...changedLines(body, next)];
-      rec.protected = [...new Set(keep)];
+      const kept = [...rec.protected.filter((p) => flat(next).includes(flat(p))), ...changedLines(body, next)];
+      rec.protected = [...new Set(kept)];
       rec.history = [...(rec.history || []), { at: new Date().toISOString(), changed: changedLines(body, next).length }];
-      await putFile(c.humanPath, JSON.stringify(rec, null, 1) + "\n", h?.sha, "デスクで手直し(直した段落の記録)", c.pr.head.ref);
+      const res = await putFile(c.humanPath, JSON.stringify(rec, null, 1) + "\n", h?.sha, `${EDIT_MSG}(直した段落の記録)`, c.pr.head.ref);
+      store.del(key);
       await gh(`${R}/issues/${n}/labels`, { method: "POST", body: JSON.stringify({ labels: [HUMAN_LABEL] }) }).catch(() => {});
-      lastCheck[n] = await checkBody(c, front + next);
-      toast("保存しました"); history_.pop(); go(() => draft(n), "下書き", false);
+      lastCheck[n] = { ...(await checkBody(c, front + next)), sha: res?.commit?.sha || "" };
+      toast("保存しました。PR の本文の検証が始まります"); history_.pop(); go(() => draft(n), "下書き", false);
     } catch (e) { toast(e.message); $("#saveBody").disabled = false; }
   };
+}
+
+// PR の「本文の検証」(本社の draft-check.yml)。保存の push で走り、結果を PR にコメントする
+const CHECK_WF = "draft-check.yml";
+async function prCheck(el, n, sha, comments, waiting) {
+  if (!document.body.contains(el)) return;
+  const mark = `<!-- draft-check sha=${sha} -->`;
+  const hit = [...comments].reverse().find((c) => c.body.includes(mark));
+  if (hit) {
+    const ok = /本文の検証: 問題なし/.test(hit.body);
+    el.innerHTML = `<details class="card pad vcheck" ${ok ? "" : "open"}><summary><b>PR の本文の検証</b> <span class="meta">${ok ? "問題なし" : "直す点があります"}</span></summary>
+      <div class="md">${md(hit.body.replace(mark, "").replace(/^###[^\n]*\n/m, ""))}</div></details>`;
+    return;
+  }
+  let run = null;
+  try { run = (await gh(`${R}/actions/workflows/${CHECK_WF}/runs?head_sha=${sha}&per_page=5`)).workflow_runs?.[0] || null; } catch { if (!waiting) return; }
+  if (!run && !waiting) { el.innerHTML = ""; return; }
+  if (run && run.status === "completed") {
+    const cs = await gh(`${R}/issues/${n}/comments?per_page=100`).catch(() => []);
+    if (cs.some((c) => c.body.includes(mark))) return prCheck(el, n, sha, cs, waiting);
+    if (!["success", "failure"].includes(run.conclusion)) {
+      el.innerHTML = `<div class="card pad vcheck"><b>PR の本文の検証</b> <span class="meta">${esc(run.conclusion || "")}で終わりました。<a href="${esc(run.html_url)}" target="_blank" rel="noopener">実行を開く</a></span></div>`;
+      return;
+    }
+  }
+  el.innerHTML = `<div class="card pad vcheck"><b>PR の本文の検証</b> <span class="meta">${run ? "検証中…" : "開始を待っています…"}(1〜2分。この画面のまま待てば結果が出ます)</span></div>`;
+  setTimeout(() => prCheck(el, n, sha, comments, waiting), 15000);
 }
 
 // ---------- 本文の検証(本社の office.py の validate と同じ考え方の簡易版) ----------
@@ -493,7 +557,7 @@ async function checkBody(c, text) {
 }
 function checkPanel(r) {
   const li = (cls, mark, x) => `<li class="${cls}">${mark} ${esc(x)}</li>`;
-  return `<div class="card pad vcheck"><b>手直しの検証</b> <span class="meta">${r.errs.length ? `直す点 ${r.errs.length}件` : "問題なし"}${r.warns.length ? ` ・ 注意 ${r.warns.length}件` : ""}</span>
+  return `<div class="card pad vcheck"><b>手直しの検証(デスクの簡易チェック)</b> <span class="meta">${r.errs.length ? `直す点 ${r.errs.length}件` : "問題なし"}${r.warns.length ? ` ・ 注意 ${r.warns.length}件` : ""}</span>
     <ul>${r.errs.map((x) => li("v-ng", "✗", x)).join("")}${r.warns.map((x) => li("v-warn", "!", x)).join("")}${r.info.map((x) => li("v-ok", "✓", x)).join("")}</ul></div>`;
 }
 
@@ -533,8 +597,9 @@ async function draft(n) {
     ${warn ? `<div class="warn md">${md(warn)}</div>` : ""}
     ${facts && facts.claims.some((c) => c.verdict === "wrong") ? '<div class="warn">ファクトチェックで<b>誤り</b>が残っています(要確認)。下の表で出典と照らしてください。</div>' : ""}
     ${lastCheck[n] ? checkPanel(lastCheck[n]) : ""}
+    <div id="prcheck"></div>
     <div class="row" style="justify-content:space-between"><div class="meta">${esc(chName(ch))} ・ ${esc(STAGE_LABEL[st] || st)} ・ ${esc(meta.date || "")} ・ ${size}${pr.labels.some((l) => l.name === HUMAN_LABEL) ? " ・ 人が手直し済み" : ""}</div>
-      ${closed ? "" : '<button class="sub" id="edit">本文を編集</button>'}</div>
+      ${closed || !canSelfEdit(ch, st) ? "" : '<button class="sub" id="edit">自分で直す</button>'}</div>
     ${thumbSrc ? `<div class="card pad stack"><div class="meta">見出し画像(サムネ)${meta.thumb_title ? ` ・ 「${esc(String(meta.thumb_title).replace(/\\n|\n/g, " / "))}」` : ""}</div>
       <img src="${thumbSrc}" alt="見出し画像のプレビュー" style="width:100%;height:auto;border-radius:6px;border:1px solid var(--line)">
       <div class="meta">${outbox ? "承認すると、記事と一緒に note 登録待ちに置かれ、PC の下書き登録で見出し画像として設定されます。" : ""}</div></div>`
@@ -574,8 +639,10 @@ async function draft(n) {
       copyRich(inner, pv.contentDocument?.body?.innerText || body);
     } else copyRich(md(body), `${meta.title || ""}\n\n${body}`);
   };
+  if (!closed) prCheck($("#prcheck"), n, pr.head.sha, comments, !!lastCheck[n] && Date.now() - lastCheck[n].at < 10 * 60 * 1000);
   if (closed) return;
-  $("#edit").onclick = () => go(() => editBody(n), "本文を編集");
+  const ed = $("#edit");
+  if (ed) ed.onclick = () => go(() => editBody(n), "自分で直す");
   if (st === "ja") {
     twoTap($("#pub"), "英訳を始める", async () => {
       await gh(`${R}/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body: "/approve-ja\n\n(デスクから承認)" }) });
