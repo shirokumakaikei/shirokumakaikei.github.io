@@ -604,9 +604,9 @@ async function draft(n) {
     <div id="prcheck"></div>
     <div class="row" style="justify-content:space-between"><div class="meta">${esc(chName(ch))} ・ ${esc(STAGE_LABEL[st] || st)} ・ ${esc(meta.date || "")} ・ ${size}${pr.labels.some((l) => l.name === HUMAN_LABEL) ? " ・ 人が手直し済み" : ""}</div>
       ${closed || !canSelfEdit(ch, st) ? "" : '<button class="sub" id="edit">自分で直す</button>'}</div>
-    ${thumbSrc ? `<div class="card pad stack"><div class="meta">見出し画像(サムネ)${meta.thumb_title ? ` ・ 「${esc(String(meta.thumb_title).replace(/\\n|\n/g, " / "))}」` : ""}</div>
-      <img src="${thumbSrc}" alt="見出し画像のプレビュー" style="width:100%;height:auto;border-radius:6px;border:1px solid var(--line)">
-      <div class="meta">${outbox ? "承認すると、記事と一緒に note 登録待ちに置かれ、PC の下書き登録で見出し画像として設定されます。" : ""}</div></div>`
+    ${thumbSrc ? `<div class="card pad stack"><div class="meta">${isSite ? "SNS で共有したときの画像(OGP)" : "見出し画像(サムネ)"}${meta.thumb_title ? ` ・ 「${esc(String(meta.thumb_title).replace(/\\n|\n/g, " / "))}」` : ""}</div>
+      <img src="${thumbSrc}" alt="${isSite ? "OGP 画像" : "見出し画像"}のプレビュー" style="width:100%;height:auto;border-radius:6px;border:1px solid var(--line)">
+      <div class="meta">${outbox ? "承認すると、記事と一緒に note 登録待ちに置かれ、PC の下書き登録で見出し画像として設定されます。" : isSite ? "公開すると、記事と一緒にサイトに置かれ、X や LINE で共有したときにこの画像が出ます。" : ""}</div></div>`
       : (meta.thumb_title ? '<div class="warn">サムネ(見出し画像)がまだできていません。報告の「⚠」を確認してください。</div>' : "")}
     ${!isSite && !outbox && st !== "ja" ? `<div class="row"><button class="sub" id="copy">${htmlFile ? "HTMLをコピー" : "本文をコピー"}</button><span class="meta">コピーして投稿画面に貼り付け、投稿し終えたら「投稿済みにする」</span></div>` : ""}
     <iframe class="preview" id="pv" title="公開イメージ"></iframe>

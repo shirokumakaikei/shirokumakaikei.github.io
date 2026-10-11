@@ -235,6 +235,11 @@ def render_article(a: dict, all_slugs: set[str]) -> str:
             raise BuildError(f"{a['slug']}: 内部リンク先 {target}.html が存在しません")
     url = f"{BASE}/articles/{a['slug']}.html"
     og = a.get("og_description") or a["description"]
+    # OGP 画像(本社の publish が assets/og/<slug>.png に置く)。無い記事は文字だけのカード
+    has_img = (ROOT / "assets" / "og" / f"{a['slug']}.png").exists()
+    img = f"{BASE}/assets/og/{a['slug']}.png"
+    og_img = (f'<meta property="og:image" content="{img}">\n<meta property="og:image:width" content="1200">\n'
+              f'<meta property="og:image:height" content="628">\n<meta name="twitter:image" content="{img}">\n') if has_img else ""
     ld = {
         "@context": "https://schema.org",
         "@graph": [
@@ -276,7 +281,7 @@ def render_article(a: dict, all_slugs: set[str]) -> str:
 <meta property="og:url" content="{url}">
 <meta property="og:site_name" content="しろくま会計">
 <meta property="og:locale" content="ja_JP">
-<meta name="twitter:card" content="summary">
+{og_img}<meta name="twitter:card" content="{'summary_large_image' if has_img else 'summary'}">
 <meta name="twitter:title" content="{t}">
 <meta name="twitter:description" content="{esc(og)}">
 <link rel="stylesheet" href="../assets/style.css">
