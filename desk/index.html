@@ -103,6 +103,8 @@ label { font-size: 0.85rem; color: var(--muted); display: grid; gap: 4px; }
 <div class="toast" id="toast" hidden></div>
 
 <script>
+// このスクリプト自身の中身。公開中のデスクと比べて、新しくなっていたら読み込み直す(checkDeskUpdate)
+const SELF = document.currentScript ? document.currentScript.textContent : "";
 "use strict";
 // 本社(非公開)にAI社員の下書き・ネタ帳・体験がある。公開サイトのリポジトリは公開処理の状況を見るだけ
 const OFFICE = "shirokumakaikei/shirokuma-office";
@@ -222,7 +224,21 @@ function go(fn, title, push = true) {
   fn().catch((e) => { view.innerHTML = `<div class="card pad"><p>${esc(e.message)}</p></div>`; });
 }
 $("#back").onclick = () => { const p = history_.pop(); if (p) go(p.fn, p.title, false); };
-$("#reload").onclick = () => { channelsCache = null; current && go(current.fn, current.title, false); };
+$("#reload").onclick = async () => { if (await checkDeskUpdate()) return; channelsCache = null; current && go(current.fn, current.title, false); };
+// スマホのブラウザは古いデスクを持ち続けることがある。公開中のデスクを取り直し、中身が違えば読み込み直す
+async function checkDeskUpdate() {
+  try {
+    const r = await fetch(location.pathname + "?check=" + Date.now(), { cache: "no-store" });
+    if (!r.ok || !SELF) return false;
+    if ((await r.text()).includes(SELF)) return false;
+    let last = 0; try { last = +(sessionStorage.getItem("desk.reloadAt") || 0); } catch {}
+    if (Date.now() - last < 60000) return false;  // 読み込み直しが続かないように1分に1回まで
+    try { sessionStorage.setItem("desk.reloadAt", String(Date.now())); } catch {}
+    toast("デスクが新しくなったので読み込み直します");
+    location.replace(location.pathname + "?v=" + Date.now() + location.hash);
+    return true;
+  } catch { return false; }
+}
 $("#settingsBtn").onclick = () => go(settings, "設定");
 const home = () => { history_.length = 0; go(inbox, "決裁デスク", false); };
 
@@ -1099,6 +1115,7 @@ async function openFromHash() {
   } catch (e) { toast(e.message); return false; }
 }
 openFromHash().then((ok) => { if (!ok) home(); });
+checkDeskUpdate();
 </script>
 </body>
 </html>
