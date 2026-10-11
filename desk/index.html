@@ -65,6 +65,12 @@ iframe.preview { width: 100%; border: 1px solid var(--line); border-radius: 12px
 textarea, input[type=text], input[type=password], select { width: 100%; font: inherit; color: var(--fg); background: var(--bg);
   border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
 textarea { min-height: 96px; resize: vertical; }
+/* 本文を編集: 画面幅いっぱい、保存ボタンは下に固定 */
+.editor { display: block; width: calc(100% + 32px); margin: 0 -16px; min-height: calc(100vh - 230px); font-size: 16px; line-height: 1.75; padding: 12px 16px; border-radius: 0; border-left: 0; border-right: 0; }
+.fixbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--bg); border-top: 1px solid var(--line);
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); }
+.fixbar .wrap { padding: 0; display: flex; gap: 8px; align-items: center; }
+.vcheck ul { margin: 6px 0 0; padding-left: 18px; } .vcheck li.v-ng { color: var(--ng); } .vcheck li.v-warn { color: var(--warn); } .vcheck li.v-ok { color: var(--ok); }
 [hidden] { display: none !important; }
 label { font-size: 0.85rem; color: var(--muted); display: grid; gap: 4px; }
 .bar { position: sticky; bottom: 0; background: var(--bg); border-top: 1px solid var(--line); margin-top: 16px;
@@ -189,7 +195,7 @@ async function loadChannels() {
       const get = (k) => (y.match(new RegExp(`^${k}:\\s*(.+)$`, "m")) || [])[1]?.replace(/\s+#.*$/, "").trim();
       return { id: d.name, name: get("name") || d.name, enabled: get("enabled") === "true",
                types: /^types:/m.test(y), categories: /^categories:/m.test(y), twoStage: get("two_stage") === "true",
-               research: get("research") || "false", publish: get("publish") || "" };
+               research: get("research") || "false", publish: get("publish") || "", raw: y };
     } catch { return null; }
   }));
   channelsCache = list.filter(Boolean);
@@ -353,6 +359,144 @@ function factTable(f) {
     <span class="meta">正しい ${n("correct")} / 誤り ${n("wrong")} / 古い ${n("outdated")} / 未確認 ${n("unverified")}</span></summary>
     <div class="list">${rows || '<p class="empty">検証が必要な事実の主張はありませんでした。</p>'}</div></details>`;
 }
+// ---------- 本文を自分で直す ----------
+const HUMAN_LABEL = "人が手直し済み";
+const lastCheck = {};  // 保存後の検証結果(PR 番号ごと)。下書き画面の上に出す
+function splitRaw(text) {  // front matter はそのまま残し、本文だけを差し替えるため
+  const m = text.match(/^(---\n[\s\S]*?\n---\n)([\s\S]*)$/);
+  return m ? { front: m[1], body: m[2] } : { front: "", body: text };
+}
+const flat = (s) => String(s).replace(/\s+/g, "");
+// 手直しした段落(新しく出てきた行)。見出しも含む。空行は除く
+function changedLines(before, after) {
+  const old = new Set(before.split("\n").map((l) => l.trim()).filter(Boolean));
+  return after.split("\n").map((l) => l.trim()).filter((l) => l && !old.has(l));
+}
+async function draftCtx(n) {
+  const [pr, files] = await Promise.all([gh(`${R}/pulls/${n}`), gh(`${R}/pulls/${n}/files?per_page=50`)]);
+  const ch = labelOf(pr, "channel:") || "site", st = labelOf(pr, "stage:") || "final", slug = pr.head.ref.split("/").pop();
+  const pick = (re) => files.map((f) => f.filename).find((f) => re.test(f));
+  const mdPath = st === "ja" ? pick(/\.ja\.md$/) || `drafts/${ch}/${slug}.ja.md` : pick(new RegExp(`${slug}\\.md$`)) || `drafts/${ch}/${slug}.md`;
+  return { pr, ch, st, slug, mdPath, humanPath: mdPath.replace(/\.md$/, ".human.json") };
+}
+async function editBody(n) {
+  const c = await draftCtx(n);
+  const f = await getFile(c.mdPath, c.pr.head.ref);
+  const { front, body } = splitRaw(f.text);
+  view.innerHTML = `
+  <p class="meta" style="margin-top:12px">本文(Markdown)を直接直せます。見出しは「## 」、太字は「**」で囲みます。保存すると、このPRに「デスクで手直し」として記録され、直した段落は次の修正依頼やファクトチェックで AI が書き換えません。</p>
+  <textarea class="editor" id="body" spellcheck="false">${esc(body)}</textarea>
+  <div style="height:90px"></div>
+  <div class="fixbar"><div class="wrap"><span class="meta" id="cnt" style="flex:1"></span>
+    <button class="sub" id="cancel">やめる</button><button class="act" id="saveBody">保存</button></div></div>`;
+  const ta = $("#body");
+  const count = () => { $("#cnt").textContent = `${ta.value.replace(/\s/g, "").length.toLocaleString()}字`; };
+  ta.oninput = count; count();
+  $("#cancel").onclick = () => { $("#back").click(); };
+  $("#saveBody").onclick = async () => {
+    const next = ta.value.replace(/\s+$/, "") + "\n";
+    if (next === body) return toast("変更がありません");
+    $("#saveBody").disabled = true;
+    try {
+      const cur = await getFile(c.mdPath, c.pr.head.ref);
+      if (cur.sha !== f.sha) throw new Error("編集中に AI が下書きを更新しました。「やめる」で戻って、開き直してから直してください");
+      await putFile(c.mdPath, front + next, cur.sha, "デスクで手直し", c.pr.head.ref);
+      // 手直しした段落を記録する(前からの記録で今も残っているもの + 今回の変更)
+      const h = await getFile(c.humanPath, c.pr.head.ref).catch(() => null);
+      let rec = { protected: [], history: [] }; try { if (h) rec = { ...rec, ...JSON.parse(h.text) }; } catch {}
+      const keep = [...rec.protected.filter((p) => flat(next).includes(flat(p))), ...changedLines(body, next)];
+      rec.protected = [...new Set(keep)];
+      rec.history = [...(rec.history || []), { at: new Date().toISOString(), changed: changedLines(body, next).length }];
+      await putFile(c.humanPath, JSON.stringify(rec, null, 1) + "\n", h?.sha, "デスクで手直し(直した段落の記録)", c.pr.head.ref);
+      await gh(`${R}/issues/${n}/labels`, { method: "POST", body: JSON.stringify({ labels: [HUMAN_LABEL] }) }).catch(() => {});
+      lastCheck[n] = await checkBody(c, front + next);
+      toast("保存しました"); history_.pop(); go(() => draft(n), "下書き", false);
+    } catch (e) { toast(e.message); $("#saveBody").disabled = false; }
+  };
+}
+
+// ---------- 本文の検証(本社の office.py の validate と同じ考え方の簡易版) ----------
+let ngCache = null;
+async function ngWords() {  // voice-tone の NG表現リスト(tools/thumb.py と同じ読み方)
+  if (ngCache) return ngCache;
+  const t = (await getFile("skills/voice-tone/SKILL.md").catch(() => ({ text: "" }))).text;
+  const sec = (t.match(/^## [^\n]*NG表現リスト[^\n]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m) || [])[1] || "";
+  const out = [];
+  for (const line of sec.split("\n")) {
+    if (line.includes("機械的な列挙")) continue;
+    const mode = line.includes("始めない") ? "start" : "any";
+    for (const m of line.matchAll(/「([^」]+)」/g)) { const w = m[1].replace(/〜/g, "").trim(); if (w) out.push([w, mode]); }
+  }
+  return (ngCache = out);
+}
+function specOf(c, meta) {
+  const y = (channelsCache || []).find((x) => x.id === c.ch)?.raw || "";
+  const num = (re) => { const m = y.match(re); return m ? m.slice(1) : null; };
+  let len, heads;
+  const t = meta.type && num(new RegExp(`^\\s+${meta.type}:\\s*\\{min:\\s*(\\d+),\\s*max:\\s*(\\d+),\\s*unit:\\s*(\\w+),\\s*headings:\\s*\\{min:\\s*(\\d+),\\s*max:\\s*(\\d+)`, "m"));
+  if (t) { len = { min: +t[0], max: +t[1], unit: t[2] }; heads = { min: +t[3], max: +t[4] }; }
+  else {
+    const l = num(/^length:\s*\{min:\s*(\d+),\s*max:\s*(\d+),\s*unit:\s*(\w+)/m), h = num(/^headings:\s*\{min:\s*(\d+),\s*max:\s*(\d+)/m);
+    len = l ? { min: +l[0], max: +l[1], unit: l[2] } : null; heads = h ? { min: +h[0], max: +h[1] } : null;
+  }
+  if (len && c.st === "ja" && len.unit === "words") len = { min: Math.floor(len.min * 1.6), max: Math.floor(len.max * 2.6), unit: "chars" };
+  const aff = (y.match(/^affiliates:\s*(.+)$/m) || [])[1]?.replace(/\s+#.*$/, "").trim() || "";
+  return { len, heads, aff };
+}
+function bodyLength(body, unit) {
+  const t = body.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[#*>`_|\-]/g, " ");
+  return unit === "words" ? (t.match(/[A-Za-z0-9][A-Za-z0-9'’.,%-]*/g) || []).length : t.replace(/\s/g, "").length;
+}
+async function checkBody(c, text) {
+  const { meta, body } = splitFront(text);
+  const sp = specOf(c, meta);
+  const errs = [], warns = [], info = [];
+  if (sp.len) {
+    const n = bodyLength(body, sp.len.unit), u = sp.len.unit === "words" ? "語" : "字";
+    const ok = sp.len.min * 0.8 <= n && n <= sp.len.max * 1.5;
+    (ok ? info : errs).push(`本文 ${n.toLocaleString()}${u}(目安 ${sp.len.min.toLocaleString()}〜${sp.len.max.toLocaleString()}${u})`);
+  }
+  const h2 = (body.match(/^## /gm) || []).length;
+  if (sp.heads) (sp.heads.min <= h2 && h2 <= sp.heads.max + 1 ? info : errs).push(`見出し(##)${h2}個(目安 ${sp.heads.min}〜${sp.heads.max}個)`);
+  if (/[—―]/.test(text)) errs.push("エムダッシュ(— / ―)があります");
+  const plain = body.replace(/[【】]/g, "");
+  for (const [w, mode] of await ngWords()) {
+    const hit = mode === "start" ? body.split("\n").some((l) => l.replace(/^#+\s*/, "").startsWith(w))
+      : (/^[一-龠々]$/.test(w) ? new RegExp(`(?<![一-龠々])${w}(?![一-龠々])`) : new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))).test(plain);
+    if (hit) warns.push(`NG表現「${w}」(voice-tone)`);
+  }
+  // 広告の目印
+  const lines = body.split("\n");
+  const marks = [], inline = [];
+  lines.forEach((l) => { const m = l.trim().match(/^\[\[ad:([a-z0-9-]+)(:banner)?\]\]$/); if (m) marks.push({ id: m[1], banner: !!m[2] }); else if (/\[\[ad:/.test(l)) inline.push(l.trim()); });
+  if (inline.length) errs.push(`広告の目印は1行に単独で置く: ${inline[0].slice(0, 40)}`);
+  if (marks.length) {
+    if (!sp.aff || sp.aff === "[]") errs.push("この媒体では広告を使えません(channel.yml の affiliates)");
+    else {
+      let active = [];
+      try { active = parseAds((await getFile(ADS_PATH, "", SITE_REPO)).text).ads.filter((a) => a.active).map((a) => a.id); } catch {}
+      const allowed = sp.aff === "all" || sp.aff === "true" ? active : active.filter((a) => sp.aff.includes(a));
+      for (const m of marks) if (!allowed.includes(m.id)) errs.push(`広告 ${m.id} は使えない(配信停止中か、この媒体で許可されていない)`);
+      const texts = marks.filter((m) => !m.banner);
+      if (new Set(marks.map((m) => m.id)).size > 3) errs.push("広告は1記事3種類まで");
+      if (texts.length > 3) errs.push("広告の文字リンクは3つまで");
+      if (new Set(texts.map((m) => m.id)).size !== texts.length) errs.push("同じ広告の文字リンクが2回以上ある");
+      if (marks.filter((m) => m.banner).length > 1) errs.push("広告のバナーは1つまで");
+      info.push(`広告の目印 ${marks.length}か所`);
+    }
+  }
+  if (c.ch === "site") {
+    if (body.includes("この記事を書いた人")) errs.push("「この記事を書いた人」はテンプレートが入れるので本文に書かない");
+    if (/\[[^\]]*\.html\]\(/.test(body)) errs.push("リンクの表示文字がファイル名になっている");
+  }
+  return { errs, warns, info, at: new Date() };
+}
+function checkPanel(r) {
+  const li = (cls, mark, x) => `<li class="${cls}">${mark} ${esc(x)}</li>`;
+  return `<div class="card pad vcheck"><b>手直しの検証</b> <span class="meta">${r.errs.length ? `直す点 ${r.errs.length}件` : "問題なし"}${r.warns.length ? ` ・ 注意 ${r.warns.length}件` : ""}</span>
+    <ul>${r.errs.map((x) => li("v-ng", "✗", x)).join("")}${r.warns.map((x) => li("v-warn", "!", x)).join("")}${r.info.map((x) => li("v-ok", "✓", x)).join("")}</ul></div>`;
+}
+
 async function draft(n) {
   const [pr, files, comments] = await Promise.all([
     gh(`${R}/pulls/${n}`), gh(`${R}/pulls/${n}/files?per_page=50`), gh(`${R}/issues/${n}/comments?per_page=50`)]);
@@ -388,7 +532,9 @@ async function draft(n) {
     ${closed ? `<div class="warn">このPRはすでに${pr.merged ? "承認済み" : "閉じられています"}。</div>` : ""}
     ${warn ? `<div class="warn md">${md(warn)}</div>` : ""}
     ${facts && facts.claims.some((c) => c.verdict === "wrong") ? '<div class="warn">ファクトチェックで<b>誤り</b>が残っています(要確認)。下の表で出典と照らしてください。</div>' : ""}
-    <div class="meta">${esc(chName(ch))} ・ ${esc(STAGE_LABEL[st] || st)} ・ ${esc(meta.date || "")} ・ ${size}</div>
+    ${lastCheck[n] ? checkPanel(lastCheck[n]) : ""}
+    <div class="row" style="justify-content:space-between"><div class="meta">${esc(chName(ch))} ・ ${esc(STAGE_LABEL[st] || st)} ・ ${esc(meta.date || "")} ・ ${size}${pr.labels.some((l) => l.name === HUMAN_LABEL) ? " ・ 人が手直し済み" : ""}</div>
+      ${closed ? "" : '<button class="sub" id="edit">本文を編集</button>'}</div>
     ${thumbSrc ? `<div class="card pad stack"><div class="meta">見出し画像(サムネ)${meta.thumb_title ? ` ・ 「${esc(String(meta.thumb_title).replace(/\\n|\n/g, " / "))}」` : ""}</div>
       <img src="${thumbSrc}" alt="見出し画像のプレビュー" style="width:100%;height:auto;border-radius:6px;border:1px solid var(--line)">
       <div class="meta">${outbox ? "承認すると、記事と一緒に note 登録待ちに置かれ、PC の下書き登録で見出し画像として設定されます。" : ""}</div></div>`
@@ -429,6 +575,7 @@ async function draft(n) {
     } else copyRich(md(body), `${meta.title || ""}\n\n${body}`);
   };
   if (closed) return;
+  $("#edit").onclick = () => go(() => editBody(n), "本文を編集");
   if (st === "ja") {
     twoTap($("#pub"), "英訳を始める", async () => {
       await gh(`${R}/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body: "/approve-ja\n\n(デスクから承認)" }) });
