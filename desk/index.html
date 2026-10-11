@@ -43,7 +43,11 @@ h2 { font-size: 0.85rem; color: var(--muted); letter-spacing: 0.08em; margin: 28
 .item { display: flex; gap: 12px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--line); cursor: pointer;
   background: none; border-left: 0; border-right: 0; border-top: 0; border-radius: 0; text-align: left; width: 100%; }
 .item:last-child { border-bottom: 0; }
-.item .main { flex: 1; min-width: 0; }
+.item { flex-wrap: wrap; }
+/* 縦画面で文字の欄がつぶれないよう、本文は最低12文字ぶんの幅を取り、入りきらない操作部品は下の行に回す */
+.item .main { flex: 1 1 12em; min-width: 0; }
+.item .ctl { display: flex; gap: 8px; align-items: center; margin-left: auto; }
+.item .main .chip { display: inline-block; margin-bottom: 4px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .item .t { font-weight: 700; overflow-wrap: anywhere; }
 .item .m { color: var(--muted); font-size: 0.82rem; }
 .chip { font-size: 0.72rem; padding: 1px 9px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
@@ -66,7 +70,7 @@ textarea, input[type=text], input[type=password], select { width: 100%; font: in
   border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
 textarea { min-height: 96px; resize: vertical; }
 /* 自分で直す: 画面幅いっぱい、保存・やめるは大きくして下に固定 */
-.editor { display: block; width: calc(100% + 32px); margin: 0 -16px; min-height: calc(100vh - 230px); min-height: calc(100dvh - 230px); font-size: 16px; line-height: 1.75; padding: 12px 16px; border-radius: 0; border-left: 0; border-right: 0; }
+.body-editor { display: block; width: calc(100% + 32px); margin: 0 -16px; min-height: calc(100vh - 230px); min-height: calc(100dvh - 230px); font-size: 16px; line-height: 1.75; padding: 12px 16px; border-radius: 0; border-left: 0; border-right: 0; }
 .fixbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--bg); border-top: 1px solid var(--line);
   padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); }
 .fixbar .wrap { padding: 0; display: grid; gap: 8px; }
@@ -265,7 +269,7 @@ async function inbox() {
     ...pulls.filter((p) => labelOf(p, "channel:") && !has(p, "editor")).map((p) => {
       const ch = labelOf(p, "channel:"), st = labelOf(p, "stage:") || "final";
       return { kind: st === "ja" ? "editor" : "draft", chip: `${chName(ch)}・${STAGE_LABEL[st] || st}${has(p, "要確認") ? "・要確認" : ""}`,
-               t: p.title.replace(/^\[[^\]]*\]\s*/, ""), m: ago(p.updated_at || p.created_at),
+               t: p.title.replace(/^\[[^\]]*\]\s*/, "").replace(/^(日本語版|英語版)[:：]\s*/, ""), m: ago(p.updated_at || p.created_at),
                open: () => go(() => draft(p.number), STAGE_LABEL[st] || "下書き") };
     }),
     ...pulls.filter((p) => has(p, "editor")).map((p) => ({ kind: "editor", chip: `編集長・${chName(labelOf(p, "channel:"))}`,
@@ -290,11 +294,11 @@ async function inbox() {
   <div class="card list">${rep ? `<button class="item" id="rep"><div class="main"><div class="t">${esc(rep.title)}</div><div class="m">${ago(rep.created_at)}</div></div>›</button>` : '<p class="empty">まだ週報はありません。</p>'}</div>
   <h2>AI社員の稼働</h2>
   <div class="card list">${WORKFLOWS.map((w, i) => { const r = lastRun(w); return `
-    <div class="item" style="cursor:default;flex-wrap:wrap"><div class="main"><div class="t">${w.label}</div>
+    <div class="item" style="cursor:default"><div class="main"><div class="t">${w.label}</div>
       <div class="m">${r ? ago(r.created_at) : "記録なし"}${r && r.html_url ? ` ・ <a href="${esc(r.html_url)}" target="_blank" rel="noopener">ログ</a>` : ""}</div></div>
-      ${runChip(r)}
+      <div class="ctl">${runChip(r)}
       ${w.channelInput ? `<select data-ch="${i}" aria-label="媒体" style="width:auto">${enabled.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")}</select>` : ""}
-      ${w.runnable ? `<button class="sub" data-run="${i}">今すぐ</button>` : ""}</div>`; }).join("")}</div>
+      ${w.runnable ? `<button class="sub" data-run="${i}">今すぐ</button>` : ""}</div></div>`; }).join("")}</div>
   <h2>方向を決める</h2>
   <div class="card list">
     <button class="item" id="addTopic"><div class="main"><div class="t">ネタを追加する</div><div class="m">媒体を選んで、次に書かせるテーマを入れる</div></div>›</button>
@@ -307,7 +311,7 @@ async function inbox() {
   const list = $("#todo");
   todo.forEach((x) => {
     const b = document.createElement("button"); b.className = "item";
-    b.innerHTML = `<span class="chip ${x.kind}">${esc(x.chip)}</span><div class="main"><div class="t">${esc(x.t)}</div><div class="m">${esc(x.m)}</div></div>›`;
+    b.innerHTML = `<div class="main"><span class="chip ${x.kind}">${esc(x.chip)}</span><div class="t">${esc(x.t)}</div><div class="m">${esc(x.m)}</div></div>›`;
     b.onclick = x.open; list.appendChild(b);
   });
   if (rep) $("#rep").onclick = () => go(() => report(rep.number), "週報");
@@ -400,7 +404,7 @@ async function editBody(n) {
   view.innerHTML = `
   <p class="meta" style="margin-top:12px">本文(Markdown)を直接直せます。見出しは「## 」、太字は「**」で囲みます。打った内容はこの端末に自動で残ります。保存すると、このPRに「${EDIT_MSG}」として記録され、直した段落は次の修正依頼やファクトチェックで AI が書き換えません。</p>
   <div id="resume"></div>
-  <textarea class="editor" id="body" spellcheck="false">${esc(body)}</textarea>
+  <textarea class="body-editor" id="body" spellcheck="false">${esc(body)}</textarea>
   <div style="height:140px"></div>
   <div class="fixbar"><div class="wrap"><div class="row" style="justify-content:space-between"><span class="meta" id="cnt"></span><span class="meta" id="kept"></span></div>
     <div class="btns"><button class="sub" id="cancel">やめる</button><button class="act" id="saveBody">保存</button></div></div></div>`;
