@@ -321,6 +321,7 @@ async function inbox() {
     <button class="item" id="queue"><div class="main"><div class="t">ネタ帳を見る</div><div class="m">媒体ごとの、これから書く順番</div></div>›</button>
     <button class="item" id="ytch"><div class="main"><div class="t">参考チャンネル</div><div class="m">編集長が週1で見る YouTube チャンネルの追加・削除・ジャンル分け</div></div>›</button>
     <button class="item" id="addExp"><div class="main"><div class="t">体験を追加する</div><div class="m">全媒体で使える実体験を足す</div></div>›</button>
+    <button class="item" id="addPractice"><div class="main"><div class="t">実務メモを足す</div><div class="m">法令の原則とは別の、実務の慣行(しろくま会計・note で使う)</div></div>›</button>
     <button class="item" id="ads"><div class="main"><div class="t">広告を管理する</div><div class="m">アフィリエイトの追加・停止・削除(しろくま会計)</div></div>›</button>
   </div>
   <p class="meta" style="margin-top:20px"><a href="${SITE}/" target="_blank" rel="noopener">しろくま会計を開く</a> ・ <a href="https://github.com/${OFFICE}" target="_blank" rel="noopener">本社(GitHub)</a></p>`;
@@ -341,6 +342,7 @@ async function inbox() {
   $("#addTopic").onclick = () => go(addTopic, "ネタを追加");
   $("#queue").onclick = () => go(queueView, "ネタ帳");
   $("#addExp").onclick = () => go(addExperience, "体験を追加");
+  $("#addPractice").onclick = () => go(addPractice, "実務メモを足す");
   $("#ytch").onclick = () => go(ytChannelsView, "参考チャンネル");
   $("#ads").onclick = () => go(adsView, "広告");
 }
@@ -367,19 +369,19 @@ async function copyRich(html, plain) {
   } catch { toast("コピーできませんでした。プレビューを長押しして全選択→コピーしてください"); }
 }
 // ファクトチェック表(本社の facts/<媒体>/<slug>.json)。主張 / 判定 / 出典。出典の引用はタップで開く
-const VERDICT = { correct: ["正しい", "ok"], wrong: ["誤り", "ng"], outdated: ["古い", "warn"], unverified: ["未確認", "idle"] };
+const VERDICT = { correct: ["正しい", "ok"], wrong: ["誤り", "ng"], outdated: ["古い", "warn"], unverified: ["未確認", "idle"], practice: ["実務メモ", "editor"] };
 function factTable(f) {
   const cs = f.claims || [];
   const n = (v) => cs.filter((c) => c.verdict === v).length;
   const host = (u) => { try { return new URL(u).hostname; } catch { return ""; } };
   const rows = cs.map((c) => { const [label, cls] = VERDICT[c.verdict] || [c.verdict, "idle"];
-    const src = /^https:\/\//.test(c.source_url) ? `<a href="${esc(c.source_url)}" target="_blank" rel="noopener">${esc(host(c.source_url))}</a>` : "なし";
+    const src = c.verdict === "practice" ? "実務メモ(本人の経験)" : /^https:\/\//.test(c.source_url) ? `<a href="${esc(c.source_url)}" target="_blank" rel="noopener">${esc(host(c.source_url))}</a>` : "なし";
     return `<div class="item" style="cursor:default;display:block">
       <div class="row" style="justify-content:space-between;align-items:flex-start;gap:8px"><div class="t" style="flex:1">${esc(c.claim)}</div><span class="chip ${cls}">${label}</span></div>
       <div class="m">出典: ${src}${c.verdict !== "correct" && c.note ? ` ・ ${esc(c.note)}` : ""}</div>
       ${c.quote ? `<details class="m"><summary>出典の引用</summary>「${esc(c.quote)}」${c.fix ? `<br>直し方: ${esc(c.fix)}` : ""}</details>` : ""}</div>`; }).join("");
   return `<details class="card" ${n("wrong") || n("outdated") ? "open" : ""}><summary class="pad"><b>ファクトチェック表</b>
-    <span class="meta">正しい ${n("correct")} / 誤り ${n("wrong")} / 古い ${n("outdated")} / 未確認 ${n("unverified")}</span></summary>
+    <span class="meta">正しい ${n("correct")} / 誤り ${n("wrong")} / 古い ${n("outdated")} / 未確認 ${n("unverified")}${n("practice") ? ` / 実務メモ ${n("practice")}` : ""}</span></summary>
     <div class="list">${rows || '<p class="empty">検証が必要な事実の主張はありませんでした。</p>'}</div></details>`;
 }
 // ---------- 本文を自分で直す ----------
@@ -899,6 +901,32 @@ async function addExperience() {
       await putFile("shared/experiences.md", text, f.sha, "体験を追加");
       toast("追加しました。次の記事から使われます"); $("#exp").value = ""; $("#add").disabled = false;
     } catch (e) { toast(e.message); $("#add").disabled = false; }
+  };
+}
+
+// 実務の慣行メモ(shared/practice-notes.md)。法令上の原則とは別に、実務で容認されていることを本人の経験として残す
+async function addPractice() {
+  view.innerHTML = `
+  <div class="card pad stack" style="margin-top:16px">
+    <p class="meta">法令上は認められていないが、実務では容認されていることを1つずつ足します(非公開)。しろくま会計と note の記事で「実務では」「経験上は」として使われます。Inside Japan Tax では使いません。</p>
+    <p class="meta">原則(法令上どうなっているか)と、実務(自分の経験ではどうだったか)を1文にまとめて書いてください。記事では、原則を出典付きで先に書き、実務は経験として分けて書かれます。</p>
+    <label>実務メモ<textarea id="pn" placeholder="書き方:〇〇は法令上は△△が必要。ただ実務では□□までなら、経験上は特に指摘されなかった"></textarea></label>
+  </div>
+  <div class="bar"><button class="act" id="add">追加する</button></div>`;
+  $("#add").onclick = async () => {
+    const t = $("#pn").value.trim().replace(/\n+/g, " ");
+    if (!t) return toast("実務メモを書いてください");
+    if (/—/.test(t)) return toast("エムダッシュは使えません");
+    $("#add").disabled = true;
+    try {
+      const f = await getFile("shared/practice-notes.md");
+      const head = "## 追加メモ(決裁デスクから)";
+      let text = f.text.replace(/\n+$/, "");
+      if (!text.includes(head)) text += `\n\n${head}`;
+      text += `\n- ${t}\n`;
+      await putFile("shared/practice-notes.md", text, f.sha, "実務メモを足す");
+      toast("追加しました。次の記事から使われます"); $("#pn").value = ""; $("#add").disabled = false;
+    } catch (e) { toast(/404/.test(e.message) ? "実務メモのファイルがまだありません(本社の PR をマージしてから使えます)" : e.message); $("#add").disabled = false; }
   };
 }
 
