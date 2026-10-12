@@ -1039,6 +1039,8 @@ const AD_FIELDS = [
   ["lead_hint", "置き方のヒント(任意)", "例:求人を見たい人向けに一言添えてから置く", false],
 ];
 const AD_TYPES = { service: "サービス", product: "商品" };
+// 商品を誰が使っていたか(必須)。記事はこの立場どおりに書き分ける。誰も使っていない商品は登録しない
+const AD_SOURCES = { self: "自分が使っていた", classmate: "同じ教室の友人が使っていた", senior: "職場の先輩税理士が受験生時代に使っていた" };
 const unq = (v) => { v = v.trim(); if (/^".*"$/.test(v)) return v.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\"); if (/^'.*'$/.test(v)) return v.slice(1, -1).replace(/''/g, "'"); return v; };
 function parseAds(text) {
   const lines = text.split("\n");
@@ -1050,10 +1052,10 @@ function parseAds(text) {
     let m;
     if (block && (/^ {6}/.test(l) || l.trim() === "")) { cur[block].push(l.slice(6)); continue; }
     block = null;
-    if ((m = l.match(/^  ([a-z0-9-]+):\s*$/))) { cur = { id: m[1], active: true, type: "service", used: false, text: [], banner: [], code: [] }; ads.push(cur); continue; }
+    if ((m = l.match(/^  ([a-z0-9-]+):\s*$/))) { cur = { id: m[1], active: true, type: "service", source: "", text: [], banner: [], code: [] }; ads.push(cur); continue; }
     if (!cur) continue;
     if ((m = l.match(/^    (text|banner|code):\s*\|-?\s*$/))) { block = m[1]; cur[block] = []; continue; }
-    if ((m = l.match(/^    ([a-z_]+):\s*(.*)$/))) cur[m[1]] = ["active", "used"].includes(m[1]) ? m[2].trim() === "true" || (m[1] === "active" && m[2].trim() !== "false") : unq(m[2]);
+    if ((m = l.match(/^    ([a-z_]+):\s*(.*)$/))) cur[m[1]] = m[1] === "active" ? m[2].trim() !== "false" : unq(m[2]);
   }
   for (const a of ads) {
     for (const k of ["text", "banner", "code"]) a[k] = (Array.isArray(a[k]) ? a[k].join("\n") : a[k] || "").trim();
@@ -1067,8 +1069,8 @@ function dumpAds({ head, ads }) {
     out.push(`  ${a.id}:`, `    active: ${a.active ? "true" : "false"}`, `    type: ${a.type === "product" ? "product" : "service"}`);
     for (const [k] of AD_FIELDS) if (a[k]) out.push(`    ${k}: ${yq(a[k])}`);
     if (a.type === "product") {
-      out.push(`    used: ${a.used ? "true" : "false"}`);
-      if (a.used && a.used_note) out.push(`    used_note: ${yq(a.used_note)}`);
+      out.push(`    source: ${AD_SOURCES[a.source] ? a.source : "self"}`);
+      if (a.note) out.push(`    note: ${yq(a.note)}`);
     }
     for (const k of a.type === "product" ? ["code"] : ["text", "banner"]) if (a[k]) out.push(`    ${k}: |`, ...a[k].trim().split("\n").map((l) => "      " + l.trimEnd()));
   }
@@ -1090,7 +1092,7 @@ async function adsView() {
     const d = document.createElement("div"); d.className = "item"; d.style.cursor = "default"; d.style.flexWrap = "wrap";
     d.innerHTML = `<span class="chip ${a.active ? "ok" : "idle"}">${a.active ? "配信中" : "停止中"}</span>
       <div class="main" style="flex:1 1 60%;min-width:0"><div class="t">${esc(a.name || a.id)}</div>
-      <div class="m">${AD_TYPES[a.type]} ・ ${esc(a.about || "")}<br>目印: [[ad:${esc(a.id)}]] ・ ${a.type === "product" ? (a.used ? "使っていた" : "使っていない(紹介だけ)") : [a.text && "文字リンク", a.banner && "バナー"].filter(Boolean).join("・")}</div></div>
+      <div class="m">${AD_TYPES[a.type]} ・ ${esc(a.about || "")}<br>目印: [[ad:${esc(a.id)}]] ・ ${a.type === "product" ? esc(AD_SOURCES[a.source] || "使っていた人が未設定") : [a.text && "文字リンク", a.banner && "バナー"].filter(Boolean).join("・")}</div></div>
       <div class="row" style="flex-basis:100%;justify-content:flex-end"><button class="sub" data-edit>編集</button><button class="sub" data-toggle>${a.active ? "停止する" : "再開する"}</button><button class="danger" data-del>削除</button></div>`;
     d.querySelector("[data-edit]").onclick = () => go(() => adForm(a.id), "広告を編集");
     d.querySelector("[data-toggle]").onclick = async (e) => {
@@ -1125,18 +1127,18 @@ async function adForm(id) {
       <label>バナーのコード(任意)<textarea id="ad_banner" rows="4">${esc(a.banner || "")}</textarea></label>
     </div>
     <div class="stack" id="prodBox">
-      <label class="row" style="gap:8px;align-items:center"><input type="checkbox" id="ad_used" ${a.used ? "checked" : ""} style="width:auto"> 自分で使っていた</label>
-      <label id="usedNoteBox">使っていた時期や感想(記事に書けるのはここにある範囲だけ)<textarea id="ad_used_note" rows="3" placeholder="例:簿記論の受験中に2年使った。論点ごとの例題が多くて復習しやすかった">${esc(a.used_note || "")}</textarea></label>
-      <p class="meta">使っていないなら、記事では使用体験を書かず、紹介にとどめます。</p>
+      <label>誰が使っていたか(必須)<select id="ad_source"><option value="">選んでください</option>${Object.entries(AD_SOURCES).map(([k, v]) => `<option value="${k}" ${k === a.source ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+      <p class="meta">誰も使っていない商品は登録しないでください。記事は、選んだ立場のとおりに書き分けます(友人・先輩の物を自分が使っていたようには書きません)。</p>
+      <label>使っていた様子や感想(記事に書けるのはここにある範囲だけ)<textarea id="ad_note" rows="3" placeholder="例:簿記論の受験中に2年使っていた。論点ごとの例題が多くて復習しやすかった(友人・先輩の名前や会社名は書かない)">${esc(a.note || "")}</textarea></label>
       <label>商品リンクのコード<textarea id="ad_code" rows="5" placeholder="もしもアフィリエイトの「かんたんリンク」のコードなどをまとめて貼る">${esc(a.code || "")}</textarea></label>
     </div>
   </div>
   <div class="bar"><button class="act" id="saveAd">${id ? "保存する" : "追加する"}</button></div>`;
   const sync = () => {
     const prod = $("#ad_type").value === "product";
-    $("#svcBox").hidden = prod; $("#prodBox").hidden = !prod; $("#usedNoteBox").hidden = !$("#ad_used").checked;
+    $("#svcBox").hidden = prod; $("#prodBox").hidden = !prod;
   };
-  $("#ad_type").onchange = sync; $("#ad_used").onchange = sync; sync();
+  $("#ad_type").onchange = sync; sync();
   $("#saveAd").onclick = async () => {
     const v = (k) => $(`#ad_${k}`).value.trim();
     const nid = id || v("id");
@@ -1150,8 +1152,8 @@ async function adForm(id) {
       // <script> は、もしもアフィリエイトのかんたんリンク(msmstatic.com)だけ通す
       if (/<script/i.test(c) && !/msmstatic\.com|MoshimoAffiliateEasyLink/i.test(c)) return toast("<script> を含むコードは、もしもアフィリエイトの「かんたんリンク」だけ使えます");
       if (!/<a\s[^>]*href=|msmaflink/i.test(c)) return toast("商品リンクのコードに <a href=...> かかんたんリンクがありません");
-      if ($("#ad_used").checked && !v("used_note")) return toast("使っていた時期や感想を書いてください(記事に書けるのはここにある範囲だけです)");
-      if (/—/.test(v("used_note"))) return toast("エムダッシュは使えません");
+      if (!AD_SOURCES[v("source")]) return toast("誰が使っていたかを選んでください(誰も使っていない商品は登録しない)");
+      if (/—/.test(v("note"))) return toast("エムダッシュは使えません");
     } else {
       if (!v("text") && !v("banner")) return toast("文字リンクかバナーのコードを貼ってください");
       for (const k of ["text", "banner"]) {
@@ -1164,10 +1166,10 @@ async function adForm(id) {
     const next = { ...a, id: nid, type };
     for (const [k] of AD_FIELDS) next[k] = v(k);
     if (type === "product") {
-      next.code = v("code"); next.used = $("#ad_used").checked; next.used_note = next.used ? v("used_note") : "";
+      next.code = v("code"); next.source = v("source"); next.note = v("note");
       next.text = ""; next.banner = "";
     } else {
-      next.text = v("text"); next.banner = v("banner"); next.code = ""; next.used = false; next.used_note = "";
+      next.text = v("text"); next.banner = v("banner"); next.code = ""; next.source = ""; next.note = "";
     }
     if (id) data.ads[data.ads.findIndex((x) => x.id === id)] = next; else data.ads.push(next);
     $("#saveAd").disabled = true;
