@@ -133,7 +133,10 @@ const view = $("#view");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const md = (s) => DOMPurify.sanitize(marked.parse(String(s || "")));
 // 広告の目印はプレビューでは仮の枠で見せる(本物のコードを読み込むと表示回数が計上されるため)
-const adPreview = (s) => String(s || "").replace(/^\[\[ad:([a-z0-9-]+)(:banner)?\]\]\s*$/gm, (_, n, b) => b
+// types: 目印の名前 → "service" | "product"(わかれば。商品はボックスの仮枠で出す)
+const adPreview = (s, types = {}) => String(s || "").replace(/^\[\[ad:([a-z0-9-]+)(:banner)?\]\]\s*$/gm, (_, n, b) => types[n] === "product"
+  ? `\n<div class="ad-product"><p class="ad-product-label">記事で触れた商品</p><div style="display:flex;align-items:center;justify-content:center;min-height:120px;border:2px dashed #b9c6d6;color:#4a5a70">商品リンク: ${n}</div></div>\n`
+  : b
   ? `\n<div class="ad-banner"><div style="display:inline-flex;align-items:center;justify-content:center;width:300px;max-width:100%;height:250px;border:2px dashed #b9c6d6;color:#4a5a70">広告バナー: ${n}</div></div>\n`
   : `\n<div class="ad-text"><a href="#">広告(文字リンク): ${n}</a></div>\n`);
 const ago = (iso) => {
@@ -559,16 +562,22 @@ async function checkBody(c, text) {
   if (marks.length) {
     if (!sp.aff || sp.aff === "[]") errs.push("この媒体では広告を使えません(channel.yml の affiliates)");
     else {
-      let active = [];
-      try { active = parseAds((await getFile(ADS_PATH, "", SITE_REPO)).text).ads.filter((a) => a.active).map((a) => a.id); } catch {}
+      let list = [];
+      try { list = parseAds((await getFile(ADS_PATH, "", SITE_REPO)).text).ads.filter((a) => a.active); } catch {}
+      const active = list.map((a) => a.id), type = Object.fromEntries(list.map((a) => [a.id, a.type]));
       const allowed = sp.aff === "all" || sp.aff === "true" ? active : active.filter((a) => sp.aff.includes(a));
       for (const m of marks) if (!allowed.includes(m.id)) errs.push(`広告 ${m.id} は使えない(配信停止中か、この媒体で許可されていない)`);
-      const texts = marks.filter((m) => !m.banner);
-      if (new Set(marks.map((m) => m.id)).size > 3) errs.push("広告は1記事3種類まで");
+      // サービス(3種類・文字リンク3・バナー1)と商品(別枠で3つ、同じ商品は1回)は別に数える(build.py の check_ads と同じ)
+      const prods = marks.filter((m) => type[m.id] === "product"), svc = marks.filter((m) => type[m.id] !== "product");
+      const texts = svc.filter((m) => !m.banner);
+      if (new Set(svc.map((m) => m.id)).size > 3) errs.push("広告(サービス)は1記事3種類まで");
       if (texts.length > 3) errs.push("広告の文字リンクは3つまで");
       if (new Set(texts.map((m) => m.id)).size !== texts.length) errs.push("同じ広告の文字リンクが2回以上ある");
-      if (marks.filter((m) => m.banner).length > 1) errs.push("広告のバナーは1つまで");
-      info.push(`広告の目印 ${marks.length}か所`);
+      if (svc.filter((m) => m.banner).length > 1) errs.push("広告のバナーは1つまで");
+      if (prods.some((m) => m.banner)) errs.push("商品リンクにバナーはない([[ad:名前]] で置く)");
+      if (prods.length > 3) errs.push("商品リンクは1記事3つまで");
+      if (new Set(prods.map((m) => m.id)).size !== prods.length) errs.push("同じ商品が2回以上ある");
+      info.push(`広告の目印 ${svc.length}か所・商品リンク ${prods.length}か所`);
     }
   }
   if (c.ch === "site") {
@@ -595,6 +604,8 @@ async function draft(n) {
   const htmlPath = st === "en" ? (pick(/\.html$/) || `drafts/${ch}/${slug}.html`) : "";
   await loadChannels().catch(() => []);
   const outbox = (channelsCache || []).find((c) => c.id === ch)?.publish === "outbox";
+  let adTypes = {};
+  try { if (ch === "site") adTypes = Object.fromEntries(parseAds((await getFile(ADS_PATH, "", SITE_REPO)).text).ads.map((a) => [a.id, a.type])); } catch {}
   const thumbPath = pick(/\.thumb\.png$/) || "";
   const [file, htmlFile, factFile, thumbFile] = await Promise.all([getFile(mdPath, pr.head.ref), htmlPath ? getFile(htmlPath, pr.head.ref).catch(() => null) : null,
     getFile(`facts/${ch}/${slug}.json`, pr.head.ref).catch(() => null),
@@ -647,7 +658,7 @@ async function draft(n) {
       <base target="_blank"><link rel="stylesheet" href="${SITE}/assets/style.css"></head><body>
       <section class="hero"><div class="wrap"><h1>${esc(meta.title || slug)}</h1></div></section>
       <main><div class="wrap">${/\[\[ad:/.test(body) ? '<p class="pr-note">この記事にはプロモーション(広告)を含みます。</p>' : ""}<div class="note"><p><strong>この記事を書いた人</strong></p><p>(テンプレートの著者欄)</p></div>
-      ${md(adPreview(body)).replace(/href="([a-z0-9-]+\.html)"/g, `href="${SITE}/articles/$1"`)}</div></main></body></html>`;
+      ${md(adPreview(body, adTypes)).replace(/href="([a-z0-9-]+\.html)"/g, `href="${SITE}/articles/$1"`)}</div></main></body></html>`;
   } else {
     pv.srcdoc = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><base target="_blank">
       <style>body{max-width:680px;margin:24px auto;padding:0 16px;font-family:system-ui,sans-serif;line-height:1.8;color:#172231}</style></head>
@@ -1021,12 +1032,15 @@ async function ytChannelsView() {
 // ---------- 広告(公開サイトの content/affiliates.yml) ----------
 const ADS_PATH = "content/affiliates.yml";
 const AD_FIELDS = [
-  ["name", "サービス名", "例:ツインプロ", true],
-  ["about", "どんなサービスか(1行)", "例:会計士・会計業界向けの転職支援サービス", true],
-  ["fit", "向く読者", "例:会計業界での転職を考える経験者", true],
-  ["avoid", "使わない場面(任意)", "例:未経験向けの記事", false],
+  ["name", "名前", "例:ツインプロ / 日商簿記2級のテキスト", true],
+  ["about", "どんなものか(1行)", "例:会計士・会計業界向けの転職支援サービス", true],
+  ["fit", "合う読者・記事", "例:会計業界での転職を考える経験者 / 簿記2級の独学の記事", true],
+  ["avoid", "合わない記事(任意)", "例:未経験向けの記事", false],
   ["lead_hint", "置き方のヒント(任意)", "例:求人を見たい人向けに一言添えてから置く", false],
 ];
+const AD_TYPES = { service: "サービス", product: "商品" };
+// 商品を誰が使っていたか(必須)。記事はこの立場どおりに書き分ける。誰も使っていない商品は登録しない
+const AD_SOURCES = { self: "自分が使っていた", classmate: "同じ教室の友人が使っていた", senior: "職場の先輩税理士が受験生時代に使っていた" };
 const unq = (v) => { v = v.trim(); if (/^".*"$/.test(v)) return v.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\"); if (/^'.*'$/.test(v)) return v.slice(1, -1).replace(/''/g, "'"); return v; };
 function parseAds(text) {
   const lines = text.split("\n");
@@ -1038,32 +1052,61 @@ function parseAds(text) {
     let m;
     if (block && (/^ {6}/.test(l) || l.trim() === "")) { cur[block].push(l.slice(6)); continue; }
     block = null;
-    if ((m = l.match(/^  ([a-z0-9-]+):\s*$/))) { cur = { id: m[1], active: true, text: [], banner: [] }; ads.push(cur); continue; }
+    if ((m = l.match(/^  ([a-z0-9-]+):\s*$/))) { cur = { id: m[1], active: true, type: "service", source: "", text: [], banner: [], code: [] }; ads.push(cur); continue; }
     if (!cur) continue;
-    if ((m = l.match(/^    (text|banner):\s*\|-?\s*$/))) { block = m[1]; cur[block] = []; continue; }
+    if ((m = l.match(/^    (text|banner|code):\s*\|-?\s*$/))) { block = m[1]; cur[block] = []; continue; }
     if ((m = l.match(/^    ([a-z_]+):\s*(.*)$/))) cur[m[1]] = m[1] === "active" ? m[2].trim() !== "false" : unq(m[2]);
   }
-  for (const a of ads) for (const k of ["text", "banner"]) a[k] = (Array.isArray(a[k]) ? a[k].join("\n") : a[k] || "").trim();
+  for (const a of ads) {
+    for (const k of ["text", "banner", "code"]) a[k] = (Array.isArray(a[k]) ? a[k].join("\n") : a[k] || "").trim();
+    a.type = a.type === "product" ? "product" : "service";
+  }
   return { head, ads };
 }
 function dumpAds({ head, ads }) {
   const out = [head, "ads:"];
   for (const a of ads) {
-    out.push(`  ${a.id}:`, `    active: ${a.active ? "true" : "false"}`);
+    out.push(`  ${a.id}:`, `    active: ${a.active ? "true" : "false"}`, `    type: ${a.type === "product" ? "product" : "service"}`);
     for (const [k] of AD_FIELDS) if (a[k]) out.push(`    ${k}: ${yq(a[k])}`);
-    for (const k of ["text", "banner"]) if (a[k]) out.push(`    ${k}: |`, ...a[k].trim().split("\n").map((l) => "      " + l.trimEnd()));
+    if (a.type === "product") {
+    }
+    for (const k of a.type === "product" ? ["code"] : ["text", "banner"]) if (a[k]) out.push(`    ${k}: |`, ...a[k].trim().split("\n").map((l) => "      " + l.trimEnd()));
   }
   return out.join("\n") + "\n";
 }
 async function saveAds(data, sha, msg) {
   await putFileTo(SITE_REPO, ADS_PATH, dumpAds(data), sha, msg);
 }
+// 商品を誰が使っていたか(source)と感想(note)は、非公開の本社リポジトリに置く(公開の affiliates.yml には書かない)
+const PN_PATH = "shared/product-notes.yml";
+const PN_HEAD = "# 商品リンクを誰が使っていたか(source)と使用状況・感想(note)。非公開。決裁デスクの「広告を管理する」が書く。\n" +
+  "# source: self(本人)/ classmate(同じ教室の友人)/ senior(職場の先輩税理士が受験生時代に)。記事はこの立場どおりに書き分ける\n" +
+  "# 商品の名前・合う記事・コードは公開リポジトリの content/affiliates.yml。ここに無い(誰も使っていない)商品は記事に使わない";
+async function loadProductNotes() {
+  let f = null;
+  try { f = await getFile(PN_PATH); } catch (e) { if (!/404/.test(e.message)) throw e; }
+  const notes = {}; let cur = null, m;
+  for (const l of (f ? f.text : "").split("\n")) {
+    if ((m = l.match(/^  ([a-z0-9-]+):\s*$/))) { cur = notes[m[1]] = { source: "", note: "" }; continue; }
+    if (cur && (m = l.match(/^    (source|note):\s*(.*)$/))) cur[m[1]] = unq(m[2]);
+  }
+  return { notes, sha: f?.sha };
+}
+async function saveProductNotes(notes, sha, msg) {
+  const out = [PN_HEAD, "products:"];
+  for (const [id, n] of Object.entries(notes)) {
+    if (!AD_SOURCES[n.source]) continue;
+    out.push(`  ${id}:`, `    source: ${n.source}`);
+    if (n.note) out.push(`    note: ${yq(n.note)}`);
+  }
+  await putFileTo(OFFICE, PN_PATH, out.join("\n") + "\n", sha, msg);
+}
 async function adsView() {
-  const f = await getFile(ADS_PATH, "", SITE_REPO);
+  const [f, pn] = await Promise.all([getFile(ADS_PATH, "", SITE_REPO), loadProductNotes().catch(() => ({ notes: {} }))]);
   const data = parseAds(f.text);
   const live = data.ads.filter((a) => a.active).length;
   view.innerHTML = `
-  <p class="meta" style="margin-top:16px">ライターは配信中の広告から、記事に合うものを最大3種類選んで入れます。停止・削除すると、新しい記事で使われなくなり、公開済みの記事からも数分で消えます。</p>
+  <p class="meta" style="margin-top:16px">ライターは配信中の広告から、記事に合うものを選んで入れます。サービスは最大3種類、商品は別枠で最大3つ(道具や教材の話をした段落の直後だけ)。停止・削除すると、新しい記事で使われなくなり、公開済みの記事からも数分で消えます。</p>
   <h2>登録中の広告 <span class="count">${live}/${data.ads.length}</span></h2>
   <div class="card list" id="adl">${data.ads.length ? "" : '<p class="empty">まだ広告はありません。</p>'}</div>
   <div class="bar"><button class="act" id="newAd">広告を追加する</button></div>`;
@@ -1071,7 +1114,7 @@ async function adsView() {
     const d = document.createElement("div"); d.className = "item"; d.style.cursor = "default"; d.style.flexWrap = "wrap";
     d.innerHTML = `<span class="chip ${a.active ? "ok" : "idle"}">${a.active ? "配信中" : "停止中"}</span>
       <div class="main" style="flex:1 1 60%;min-width:0"><div class="t">${esc(a.name || a.id)}</div>
-      <div class="m">${esc(a.about || "")}<br>目印: [[ad:${esc(a.id)}]] ・ ${[a.text && "文字リンク", a.banner && "バナー"].filter(Boolean).join("・")}</div></div>
+      <div class="m">${AD_TYPES[a.type]} ・ ${esc(a.about || "")}<br>目印: [[ad:${esc(a.id)}]] ・ ${a.type === "product" ? esc(AD_SOURCES[pn.notes[a.id]?.source] || "誰が使っていたか未登録(記事に使われない)") : [a.text && "文字リンク", a.banner && "バナー"].filter(Boolean).join("・")}</div></div>
       <div class="row" style="flex-basis:100%;justify-content:flex-end"><button class="sub" data-edit>編集</button><button class="sub" data-toggle>${a.active ? "停止する" : "再開する"}</button><button class="danger" data-del>削除</button></div>`;
     d.querySelector("[data-edit]").onclick = () => go(() => adForm(a.id), "広告を編集");
     d.querySelector("[data-toggle]").onclick = async (e) => {
@@ -1083,6 +1126,7 @@ async function adsView() {
     twoTap(d.querySelector("[data-del]"), "本当に削除", async () => {
       data.ads.splice(i, 1);
       await saveAds(data, f.sha, `広告を削除: ${a.name || a.id}`);
+      if (pn.notes[a.id]) { delete pn.notes[a.id]; await saveProductNotes(pn.notes, pn.sha, `商品メモを削除: ${a.name || a.id}`).catch(() => {}); }
       toast("削除しました"); go(adsView, "広告", false);
     });
     $("#adl").appendChild(d);
@@ -1090,38 +1134,77 @@ async function adsView() {
   $("#newAd").onclick = () => go(() => adForm(null), "広告を追加");
 }
 async function adForm(id) {
-  const f = await getFile(ADS_PATH, "", SITE_REPO);
+  const [f, pn] = await Promise.all([getFile(ADS_PATH, "", SITE_REPO), loadProductNotes()]);
   const data = parseAds(f.text);
-  const a = id ? data.ads.find((x) => x.id === id) : { active: true };
-  if (!a) throw new Error("その広告は見つかりませんでした");
+  const a0 = id ? data.ads.find((x) => x.id === id) : { active: true };
+  if (!a0) throw new Error("その広告は見つかりませんでした");
+  const a = { ...a0, ...(pn.notes[a0.id] || {}) };
+  const type0 = a.type || "service";
   view.innerHTML = `
   <div class="card pad stack" style="margin-top:16px">
-    <p class="meta">ASP(A8など)で発行したコードを、そのまま貼ってください。コードは書き換えずに記事へ入ります。</p>
-    <label>目印の名前(半角英小文字・数字・ハイフン)<input type="text" id="ad_id" value="${esc(a.id || "")}" ${id ? "disabled" : ""} placeholder="例:twinpro"></label>
+    <p class="meta">ASP(A8・もしもアフィリエイトなど)で発行したコードを、そのまま貼ってください。コードは書き換えずに記事へ入ります。</p>
+    <label>種類<select id="ad_type">${Object.entries(AD_TYPES).map(([k, v]) => `<option value="${k}" ${k === type0 ? "selected" : ""}>${v}${k === "product" ? "(本・道具など。ボックスで表示)" : "(転職サービスなど)"}</option>`).join("")}</select></label>
+    <label>目印の名前(半角英小文字・数字・ハイフン)<input type="text" id="ad_id" value="${esc(a.id || "")}" ${id ? "disabled" : ""} placeholder="例:twinpro / boki2-text"></label>
     ${AD_FIELDS.map(([k, label, ph]) => `<label>${label}<input type="text" id="ad_${k}" value="${esc(a[k] || "")}" placeholder="${esc(ph)}"></label>`).join("")}
-    <label>文字リンクのコード<textarea id="ad_text" rows="4" placeholder="&lt;a href=...&gt;...&lt;/a&gt; と 1x1 の &lt;img&gt; をまとめて貼る">${esc(a.text || "")}</textarea></label>
-    <label>バナーのコード(任意)<textarea id="ad_banner" rows="4">${esc(a.banner || "")}</textarea></label>
+    <div class="stack" id="svcBox">
+      <label>文字リンクのコード<textarea id="ad_text" rows="4" placeholder="&lt;a href=...&gt;...&lt;/a&gt; と 1x1 の &lt;img&gt; をまとめて貼る">${esc(a.text || "")}</textarea></label>
+      <label>バナーのコード(任意)<textarea id="ad_banner" rows="4">${esc(a.banner || "")}</textarea></label>
+    </div>
+    <div class="stack" id="prodBox">
+      <label>誰が使っていたか(必須)<select id="ad_source"><option value="">選んでください</option>${Object.entries(AD_SOURCES).map(([k, v]) => `<option value="${k}" ${k === a.source ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+      <p class="meta">誰も使っていない商品は登録しないでください。記事は、選んだ立場のとおりに書き分けます(友人・先輩の物を自分が使っていたようには書きません)。この2つの欄は非公開の本社リポジトリに保存し、公開リポジトリには書きません。</p>
+      <label>使っていた様子や感想(記事に書けるのはここにある範囲だけ)<textarea id="ad_note" rows="3" placeholder="例:簿記論の受験中に2年使っていた。論点ごとの例題が多くて復習しやすかった(友人・先輩の名前や会社名は書かない)">${esc(a.note || "")}</textarea></label>
+      <label>商品リンクのコード<textarea id="ad_code" rows="5" placeholder="もしもアフィリエイトの「かんたんリンク」のコードなどをまとめて貼る">${esc(a.code || "")}</textarea></label>
+    </div>
   </div>
   <div class="bar"><button class="act" id="saveAd">${id ? "保存する" : "追加する"}</button></div>`;
+  const sync = () => {
+    const prod = $("#ad_type").value === "product";
+    $("#svcBox").hidden = prod; $("#prodBox").hidden = !prod;
+  };
+  $("#ad_type").onchange = sync; sync();
   $("#saveAd").onclick = async () => {
     const v = (k) => $(`#ad_${k}`).value.trim();
     const nid = id || v("id");
+    const type = $("#ad_type").value === "product" ? "product" : "service";
     if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(nid)) return toast("目印の名前は半角英小文字・数字・ハイフンだけです");
     if (!id && data.ads.some((x) => x.id === nid)) return toast("同じ名前の広告がすでにあります");
     for (const [k, label, , req] of AD_FIELDS) if (req && !v(k)) return toast(`${label}を入れてください`);
-    if (!v("text") && !v("banner")) return toast("文字リンクかバナーのコードを貼ってください");
-    for (const k of ["text", "banner"]) {
-      const c = v(k);
-      if (!c) continue;
-      if (/<script/i.test(c)) return toast("<script> を含むコードは使えません。A8などの「テキスト」「バナー」のコードを選んでください");
-      if (!/<a\s[^>]*href=/i.test(c)) return toast(`${k === "text" ? "文字リンク" : "バナー"}のコードに <a href=...> がありません`);
+    if (type === "product") {
+      const c = v("code");
+      if (!c) return toast("商品リンクのコードを貼ってください");
+      // <script> は、もしもアフィリエイトのかんたんリンク(msmstatic.com)だけ通す
+      if (/<script/i.test(c) && !/msmstatic\.com|MoshimoAffiliateEasyLink/i.test(c)) return toast("<script> を含むコードは、もしもアフィリエイトの「かんたんリンク」だけ使えます");
+      if (!/<a\s[^>]*href=|msmaflink/i.test(c)) return toast("商品リンクのコードに <a href=...> かかんたんリンクがありません");
+      if (!AD_SOURCES[v("source")]) return toast("誰が使っていたかを選んでください(誰も使っていない商品は登録しない)");
+      if (/—/.test(v("note"))) return toast("エムダッシュは使えません");
+    } else {
+      if (!v("text") && !v("banner")) return toast("文字リンクかバナーのコードを貼ってください");
+      for (const k of ["text", "banner"]) {
+        const c = v(k);
+        if (!c) continue;
+        if (/<script/i.test(c)) return toast("<script> を含むコードは使えません。A8などの「テキスト」「バナー」のコードを選んでください");
+        if (!/<a\s[^>]*href=/i.test(c)) return toast(`${k === "text" ? "文字リンク" : "バナー"}のコードに <a href=...> がありません`);
+      }
     }
-    const next = { ...a, id: nid };
+    const next = { ...a, id: nid, type };
     for (const [k] of AD_FIELDS) next[k] = v(k);
-    next.text = v("text"); next.banner = v("banner");
+    if (type === "product") {
+      next.code = v("code");
+      next.text = ""; next.banner = "";
+    } else {
+      next.text = v("text"); next.banner = v("banner"); next.code = "";
+    }
     if (id) data.ads[data.ads.findIndex((x) => x.id === id)] = next; else data.ads.push(next);
     $("#saveAd").disabled = true;
     try {
+      if (type === "product") {  // 先に非公開側(誰が使っていたか)。失敗したら公開側は書かない
+        pn.notes[nid] = { source: v("source"), note: v("note") };
+        await saveProductNotes(pn.notes, pn.sha, `商品メモを${pn.sha && id ? "更新" : "追加"}: ${next.name}`);
+      } else if (pn.notes[nid]) {
+        delete pn.notes[nid];
+        await saveProductNotes(pn.notes, pn.sha, `商品メモを削除: ${next.name}`);
+      }
       await saveAds(data, f.sha, `広告を${id ? "更新" : "追加"}: ${next.name}`);
       toast("保存しました。今夜の記事から使われます"); history_.pop(); go(adsView, "広告", false);
     } catch (e) { toast(e.message); $("#saveAd").disabled = false; }

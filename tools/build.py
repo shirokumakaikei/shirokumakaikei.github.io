@@ -33,8 +33,10 @@ EXCLUDE = {".git", ".github", "content", "tools", "slack", "team", "_site", "REA
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 BANNED = ["—", "―"]  # エムダッシュ類
 AD_RE = re.compile(r"\[\[ad:([a-z0-9-]+)(?::(banner))?\]\]")
-AD_SERVICES = 3                    # 1記事に置けるサービスの種類
-AD_LIMIT = {"text": 3, "banner": 1}  # 1記事あたりの合計
+AD_SERVICES = 3                    # 1記事に置けるサービス(type: service)の種類
+AD_LIMIT = {"text": 3, "banner": 1}  # サービスの1記事あたりの合計
+AD_PRODUCTS = 3                    # 商品リンク(type: product)は別枠で1記事3つまで(同じ商品は1回)
+PRODUCT_LABEL = "記事で触れた商品"
 PR_NOTE = '<p class="pr-note">この記事にはプロモーション(広告)を含みます。</p>'
 
 AUTHOR_NOTE = (
@@ -99,13 +101,20 @@ def load_ads(active_only: bool = False) -> dict:
     return ads
 
 
+def ad_type(ad: dict) -> str:
+    """service(転職サービスなどの広告)か product(商品リンク)か。書いていなければ service。"""
+    return "product" if str(ad.get("type", "service")).strip() == "product" else "service"
+
+
 def check_ads(name: str, body: str, strict: bool = True) -> list[str]:
     """広告の目印を検証する。広告コードの直書きは禁止(コードの書き間違い・捏造を防ぐ)。
-    strict=False(公開済み記事のビルド)では、停止・削除した広告は表示しないだけでエラーにしない。"""
+    strict=False(公開済み記事のビルド)では、停止・削除した広告は表示しないだけでエラーにしない。
+    サービス(最大3種類・文字リンク3・バナー1)と商品(別枠で最大3つ、同じ商品は1回)は別に数える。"""
     errs = []
     ads = load_ads(active_only=True)
     count = {"text": 0, "banner": 0}
     per = {}
+    products: dict[str, int] = {}
     for line in body.splitlines():
         for m in AD_RE.finditer(line):
             if line.strip() != m.group(0):
@@ -114,6 +123,13 @@ def check_ads(name: str, body: str, strict: bool = True) -> list[str]:
             if m.group(1) not in ads:
                 if strict:
                     errs.append(f"{name}: 広告 {m.group(1)} は使えません(登録が無いか停止中)")
+                continue
+            if ad_type(ads[m.group(1)]) == "product":
+                if kind == "banner":
+                    errs.append(f"{name}: 商品 {m.group(1)} にバナーはない。[[ad:{m.group(1)}]] で置く")
+                elif not ads[m.group(1)].get("code"):
+                    errs.append(f"{name}: 商品 {m.group(1)} にリンクのコードが登録されていない")
+                products[m.group(1)] = products.get(m.group(1), 0) + 1
                 continue
             if not ads[m.group(1)].get(kind):
                 errs.append(f"{name}: 広告 {m.group(1)} には{'バナー' if kind == 'banner' else '文字リンク'}がありません")
@@ -128,7 +144,12 @@ def check_ads(name: str, body: str, strict: bool = True) -> list[str]:
     for (n, k), c in per.items():
         if k == "text" and c > 1:
             errs.append(f"{name}: {n} の文字リンクが{c}回。同じサービスは1回まで")
-    if re.search(r"a8\.net|a8mat=|<a\s[^>]*rel=\"?nofollow", body):
+    if sum(products.values()) > AD_PRODUCTS:
+        errs.append(f"{name}: 商品リンクが{sum(products.values())}個。{AD_PRODUCTS}個まで")
+    for n, c in products.items():
+        if c > 1:
+            errs.append(f"{name}: 商品 {n} が{c}回。同じ商品は1回まで")
+    if re.search(r"a8\.net|a8mat=|<a\s[^>]*rel=\"?nofollow|msmaflink|moshimo", body, re.I):
         errs.append(f"{name}: 広告コードを本文に直接書かない。[[ad:...]] の目印を使う")
     return errs
 
@@ -141,7 +162,16 @@ def expand_ads(body_md: str) -> tuple[str, bool]:
     def rep(m: re.Match) -> str:
         nonlocal used
         kind = m.group(2) or "text"
-        code = (ads.get(m.group(1)) or {}).get(kind)
+        ad = ads.get(m.group(1)) or {}
+        if ad and ad_type(ad) == "product":  # 商品はボックスで出す(もしもアフィリエイトのかんたんリンクなど、ASP のコードはそのまま)
+            code = "" if kind == "banner" else ad.get("code")
+            if not code:
+                print(f"注意: 商品 {m.group(0)} はコードが無いので表示しません", file=sys.stderr)
+                return ""
+            used = True
+            return (f'\n<div class="ad-product">\n<p class="ad-product-label">{PRODUCT_LABEL}</p>\n'
+                    f'{code.strip()}\n</div>\n')
+        code = ad.get(kind)
         if not code:
             print(f"注意: 広告 {m.group(0)} は停止・削除済みなので表示しません", file=sys.stderr)
             return ""
