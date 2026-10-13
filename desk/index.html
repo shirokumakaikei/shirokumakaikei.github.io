@@ -207,7 +207,7 @@ async function loadChannels() {
       const get = (k) => (y.match(new RegExp(`^${k}:\\s*(.+)$`, "m")) || [])[1]?.replace(/\s+#.*$/, "").trim();
       return { id: d.name, name: get("name") || d.name, enabled: get("enabled") === "true",
                types: /^types:/m.test(y), categories: /^categories:/m.test(y), twoStage: get("two_stage") === "true",
-               research: get("research") || "false", publish: get("publish") || "", raw: y };
+               research: get("research") || "false", publish: get("publish") || "", ownerFields: /^owner_fields:/m.test(y), raw: y };
     } catch { return null; }
   }));
   channelsCache = list.filter(Boolean);
@@ -407,8 +407,26 @@ async function draftCtx(n) {
   const mdPath = st === "ja" ? pick(/\.ja\.md$/) || `drafts/${ch}/${slug}.ja.md` : pick(new RegExp(`${slug}\\.md$`)) || `drafts/${ch}/${slug}.md`;
   return { pr, ch, st, slug, mdPath, humanPath: mdPath.replace(/\.md$/, ".human.json") };
 }
-// 自分で直せる下書き: しろくま会計と note、Inside Japan Tax は日本語版(stage:ja)だけ
-const canSelfEdit = (ch, st) => ch === "site" || ch === "note" || (ch === "substack" && st === "ja");
+// 自分で直せる下書き: しろくま会計・しろくまラボ・note、Inside Japan Tax は日本語版(stage:ja)だけ
+const canSelfEdit = (ch, st) => ch === "site" || ch === "lab" || ch === "note" || (ch === "substack" && st === "ja");
+// 公開サイトに載る媒体(承認=公開)。しろくまラボは /lab/ に載る
+const onSite = (ch) => ch === "site" || ch === "lab";
+// 公開してはいけない文字列(公開リポジトリの tools/secret_scan.py の簡易版)。しろくまラボの手直しで見る
+function secretHits(text) {
+  const out = [];
+  for (const m of text.matchAll(/(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.]*\d)/g)) {
+    const ip = m[0], o = ip.split(".").map(Number);
+    if (o.some((x) => x > 255) || ["0.0.0.0", "127.0.0.1"].includes(ip) || (o[0] === 255 && o[1] === 255)
+        || /^(192\.0\.2|198\.51\.100|203\.0\.113)\./.test(ip)) continue;
+    out.push(`IP アドレス「${ip}」(192.168.x.x のように伏せる)`);
+  }
+  for (const m of text.matchAll(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g))
+    if (!/@(?:[\w-]+\.)*example\.(?:com|jp|org|net)$/i.test(m[0])) out.push(`メールアドレス「${m[0]}」`);
+  if (/\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_\w{30,}|sk-(?:ant-)?[\w-]{20,}|xox[abprs]-[\w-]{10,}|tskey-[\w-]{10,}|AKIA[0-9A-Z]{16}|AIza[\w-]{35})/.test(text)) out.push("トークン・API キーらしき文字列");
+  if (/\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.ts\.net\b/i.test(text)) out.push("Tailscale のマシン名(〜.ts.net)");
+  if (/-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/.test(text)) out.push("秘密鍵");
+  return out;
+}
 const EDIT_MSG = "オーナーが直接修正";
 // 書きかけはこの端末に残す(閉じても次に開いたとき戻せる)。{sha: 開いた元の版, body, at}
 const editKey = (n, path) => `desk-edit:${n}:${path}`;
@@ -580,7 +598,11 @@ async function checkBody(c, text) {
       info.push(`広告の目印 ${svc.length}か所・商品リンク ${prods.length}か所`);
     }
   }
-  if (c.ch === "site") {
+  if (c.ch === "lab") {
+    for (const h of secretHits(text)) errs.push(`公開してはいけない文字列: ${h}`);
+    if (/\[\[ad:/.test(body)) errs.push("しろくまラボの記事に広告は置かない");
+  }
+  if (onSite(c.ch)) {
     if (body.includes("この記事を書いた人")) errs.push("「この記事を書いた人」はテンプレートが入れるので本文に書かない");
     if (/\[[^\]]*\.html\]\(/.test(body)) errs.push("リンクの表示文字がファイル名になっている");
   }
@@ -616,7 +638,7 @@ async function draft(n) {
   const latestReport = [...comments].reverse().find((c) => /セルフレビュー|修正しました|利用上限/.test(c.body))?.body || pr.body;
   const warn = warningsFrom(latestReport);
   const closed = pr.state !== "open";
-  const isSite = ch === "site";
+  const isSite = onSite(ch);
   const words = body.match(/[A-Za-z0-9][A-Za-z0-9'’.,%-]*/g)?.length || 0;
   const size = st === "en" ? `${words}語` : `${body.replace(/\s/g, "").length}字`;
   let primary = "";
@@ -657,8 +679,10 @@ async function draft(n) {
     pv.srcdoc = `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
       <base target="_blank"><link rel="stylesheet" href="${SITE}/assets/style.css"></head><body>
       <section class="hero"><div class="wrap"><h1>${esc(meta.title || slug)}</h1></div></section>
-      <main><div class="wrap">${/\[\[ad:/.test(body) ? '<p class="pr-note">この記事にはプロモーション(広告)を含みます。</p>' : ""}<div class="note"><p><strong>この記事を書いた人</strong></p><p>(テンプレートの著者欄)</p></div>
-      ${md(adPreview(body, adTypes)).replace(/href="([a-z0-9-]+\.html)"/g, `href="${SITE}/articles/$1"`)}</div></main></body></html>`;
+      <main><div class="wrap">${ch === "lab" ? `<div class="note"><p><strong>作業時期</strong> ${esc(meta.worked_on || "(未記入)")}</p><p><strong>動作確認した環境</strong></p><ul>${
+        [...file.text.split(/\n---\n/)[0].matchAll(/^\s+-\s*"?(.+?)"?\s*$/gm)].map((m) => `<li>${esc(m[1])}</li>`).join("") || "<li>(未記入)</li>"}</ul></div>`
+        : (/\[\[ad:/.test(body) ? '<p class="pr-note">この記事にはプロモーション(広告)を含みます。</p>' : "") + '<div class="note"><p><strong>この記事を書いた人</strong></p><p>(テンプレートの著者欄)</p></div>'}
+      ${md(adPreview(body, adTypes)).replace(/href="([a-z0-9-]+\.html)"/g, `href="${SITE}/${ch === "lab" ? "lab" : "articles"}/$1"`)}${ch === "lab" ? '<div class="note"><p><strong>免責</strong></p><p>(テンプレートが末尾に免責を自動で付けます)</p></div>' : ""}</div></main></body></html>`;
   } else {
     pv.srcdoc = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><base target="_blank">
       <style>body{max-width:680px;margin:24px auto;padding:0 16px;font-family:system-ui,sans-serif;line-height:1.8;color:#172231}</style></head>
@@ -828,11 +852,53 @@ async function queueView() {
     const [q, files] = await Promise.all([getFile(`channels/${ch}/queue.yml`), gh(`${R}/contents/drafts/${ch}`).catch(() => [])]);
     const done = new Set((files || []).map((f) => f.name.replace(/\.(ja\.md|md|html)$/, "")));
     const pending = queueBlocks(q.text).blocks.filter((b) => !done.has(b.slug));
-    $("#ql").innerHTML = `<h2>これから書く順(${pending.length}本)</h2><div class="card list">${pending.map((b, i) => `
+    const owner = chans.find((c) => c.id === ch)?.ownerFields;
+    const missing = (b) => owner && !(b.fields.worked_on && b.fields.environment && b.fields.environment !== "[]");
+    $("#ql").innerHTML = `<h2>これから書く順(${pending.length}本)</h2>${owner ? '<p class="meta">作業した時期と動作確認した環境がそろったネタだけ書かれます。「記入する」から入れてください。</p>' : ""}<div class="card list">${pending.map((b, i) => `
       <div class="item" style="cursor:default"><span class="count">${i + 1}</span><div class="main"><div class="t">${esc(b.fields.keyword || b.slug)}</div>
-      <div class="m">${esc(b.fields.angle || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.refs.length ? " ・ " + refLinks(b.refs) : ""}</div></div></div>`).join("") || '<p class="empty">ネタ帳は空です。</p>'}</div>`;
+      <div class="m">${esc(b.fields.angle || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.refs.length ? " ・ " + refLinks(b.refs) : ""}${owner && !missing(b) ? " ・ 作業時期: " + esc(b.fields.worked_on) : ""}</div></div>
+      ${owner ? `<button class="sub" data-fill="${esc(b.slug)}">${missing(b) ? "記入する" : "直す"}</button>` : ""}</div>`).join("") || '<p class="empty">ネタ帳は空です。</p>'}</div>`;
+    $("#ql").querySelectorAll("[data-fill]").forEach((el) => { el.onclick = () => go(() => fillOwner(ch, el.dataset.fill), "作業時期と環境"); });
   };
   $("#ch").onchange = show; await show();
+}
+// しろくまラボの「作業した時期」と「動作確認した環境」。AI には作らせず、オーナーが書いたものをそのまま記事に出す
+function ownerInput() {
+  const worked = $("#worked").value.trim(), env = $("#env").value.split("\n").map((x) => x.trim()).filter(Boolean);
+  if (!worked || !env.length) return { err: "作業した時期と、動作確認した環境を入れてください" };
+  const leak = secretHits([worked, ...env].join("\n"));
+  if (leak.length) return { err: `書けない文字列があります: ${leak[0]}` };
+  if (/[—―]/.test(worked + env.join(""))) return { err: "エムダッシュは使えません" };
+  return { lines: [`    worked_on: ${yq(worked)}`, `    environment: ${JSON.stringify(env)}`] };
+}
+async function fillOwner(ch, slug) {
+  const path = `channels/${ch}/queue.yml`;
+  const q0 = await getFile(path);
+  const b0 = queueBlocks(q0.text).blocks.find((b) => b.slug === slug);
+  if (!b0) throw new Error("そのネタが見つかりませんでした");
+  let env0 = []; try { env0 = JSON.parse(b0.fields.environment || "[]"); } catch {}
+  view.innerHTML = `
+  <div class="card pad stack" style="margin-top:16px">
+    <p class="meta">「${esc(b0.fields.keyword || slug)}」を書くのに使う情報です。記事の冒頭に、この時期と環境がそのまま出ます。AI は作りません。両方そろうまで、このネタは書かれません。</p>
+    <label>作業した時期<input type="text" id="worked" placeholder="例:2025年5月" value="${esc(b0.fields.worked_on || "")}"></label>
+    <label>動作確認した環境(1行に1つ。IP アドレスや名前は書かない)<textarea id="env" rows="4" placeholder="例:Raspberry Pi 4(8GB)&#10;Raspberry Pi OS Lite 64bit(bookworm)">${esc(env0.join("\n"))}</textarea></label>
+  </div>
+  <div class="bar"><button class="act" id="save">保存する</button></div>`;
+  $("#save").onclick = async () => {
+    const owner = ownerInput();
+    if (owner.err) return toast(owner.err);
+    $("#save").disabled = true;
+    try {
+      const q = await getFile(path);
+      const { lines, blocks } = queueBlocks(q.text);
+      const b = blocks.find((x) => x.slug === slug);
+      if (!b) throw new Error("そのネタが見つかりませんでした");
+      const body = lines.slice(b.start, b.end + 1).filter((l) => !/^    (worked_on|environment):/.test(l));
+      lines.splice(b.start, b.end - b.start + 1, ...body, ...owner.lines);
+      await putFile(path, lines.join("\n").replace(/\n*$/, "\n"), q.sha, `ラボのネタに作業時期と環境を記入: ${slug}`);
+      toast("保存しました"); history_.length ? $("#back").onclick() : home();
+    } catch (e) { toast(e.message); $("#save").disabled = false; }
+  };
 }
 async function addTopic() {
   const chans = await loadChannels();
@@ -846,17 +912,23 @@ async function addTopic() {
     <label id="resWrap">税務・制度に触れるか<select id="res"><option value="">自動で判定</option><option value="true">触れる(一次情報で確認して出典を付ける)</option><option value="false">触れない</option></select></label>
     <label id="catWrap">カテゴリ<select id="cat">${CATS.map((c) => `<option>${c}</option>`).join("")}</select></label>
     <label id="typeWrap">記事の型<select id="type"><option value="short">short(短記事)</option><option value="main">main(主記事)</option></select></label>
+    <div id="ownerWrap" class="stack">
+      <label>作業した時期(必須)<input type="text" id="worked" placeholder="例:2025年5月"></label>
+      <label>動作確認した環境(必須。1行に1つ。IP アドレスや名前は書かない)<textarea id="env" rows="3" placeholder="例:Raspberry Pi 4(8GB)&#10;Raspberry Pi OS Lite 64bit(bookworm)"></textarea></label>
+    </div>
     <label>順番<select id="pos"><option value="top">次に書かせる</option><option value="end">最後に並べる</option></select></label>
     <label>URL名(半角英小文字とハイフン、任意)<input type="text" id="slug" placeholder="空欄なら自動"></label>
   </div>
   <div class="bar"><button class="act" id="add">ネタ帳に入れる</button></div>`;
   const sync = () => { const c = chans.find((x) => x.id === $("#ch").value) || {};
-    $("#catWrap").hidden = !c.categories; $("#typeWrap").hidden = !c.types; $("#resWrap").hidden = c.research !== "auto"; };
+    $("#catWrap").hidden = !c.categories; $("#typeWrap").hidden = !c.types; $("#resWrap").hidden = c.research !== "auto"; $("#ownerWrap").hidden = !c.ownerFields; };
   $("#ch").onchange = sync; sync();
   $("#add").onclick = async () => {
     const ch = $("#ch").value, c = chans.find((x) => x.id === ch) || {};
     const kw = $("#kw").value.trim(), angle = $("#angle").value.trim();
     if (!kw || !angle) return toast("キーワードと切り口を入れてください");
+    const owner = c.ownerFields ? ownerInput() : null;
+    if (owner && owner.err) return toast(owner.err);
     let slug = $("#slug").value.trim();
     if (slug && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) return toast("URL名は半角英小文字・数字・ハイフンだけです");
     const refs = $("#refs").value.split(/\s+/).map((u) => u.trim()).filter(Boolean);
@@ -881,6 +953,7 @@ async function addTopic() {
       block.push(`    notes: ${yq($("#notes").value.trim())}`);
       if (c.research === "auto" && $("#res").value) block.push(`    research: ${$("#res").value}`);
       if (refs.length) block.push(`    reference_videos: ${JSON.stringify(refs)}`);
+      if (owner) block.push(...owner.lines);
       let lines = q.text.replace(/\n+$/, "").replace(/^topics:\s*\[\]\s*$/m, "topics:").split("\n");
       if ($("#pos").value === "top") {
         const at = lines.findIndex((l) => /^topics:/.test(l));
@@ -891,11 +964,25 @@ async function addTopic() {
     } catch (e) { toast(e.message); $("#add").disabled = false; }
   };
 }
+// experiences.md の「## 章」の最後に1行足す。章が無ければ末尾に作る
+function addToSection(text, head, line) {
+  const lines = text.replace(/\n+$/, "").split("\n");
+  const at = lines.findIndex((l) => l.trim() === head);
+  if (at < 0) return `${lines.join("\n")}\n\n${head}\n${line}\n`;
+  let end = lines.findIndex((l, i) => i > at && /^## /.test(l));
+  if (end < 0) end = lines.length;
+  let ins = end;
+  while (ins > at + 1 && lines[ins - 1].trim() === "") ins--;
+  lines.splice(ins, 0, line);
+  return lines.join("\n") + "\n";
+}
 async function addExperience() {
   view.innerHTML = `
   <div class="card pad stack" style="margin-top:16px">
     <p class="meta">記事に「自分の体験」として書いてよいエピソードを1つずつ足します(全媒体共通・非公開)。</p>
+    <label>章<select id="expSec"><option value="">会計・仕事(全媒体)</option><option value="技術">技術(しろくまラボで使う。自宅の機器で試したこと)</option></select></label>
     <label>体験<textarea id="exp" placeholder="例:無予告調査の当日、最初に見られたのは現金と帳簿の突き合わせだった"></textarea></label>
+    <p class="meta">技術の体験に、IP アドレス・機器の名前・ユーザー名・メールアドレス・トークンは書かないでください(書くと保存できません)。現職や業務委託先の話も書きません。</p>
   </div>
   <div class="bar"><button class="act" id="add">追加する</button></div>`;
   $("#add").onclick = async () => {
@@ -904,12 +991,16 @@ async function addExperience() {
     if (/—/.test(t)) return toast("エムダッシュは使えません");
     $("#add").disabled = true;
     try {
+      const sec = $("#expSec").value;
+      if (sec) { const leak = secretHits(t); if (leak.length) throw new Error(`書けない文字列があります: ${leak[0]}`); }
       const f = await getFile("shared/experiences.md");
-      const head = "## 追加メモ(決裁デスクから)";
-      let text = f.text.replace(/\n+$/, "");
-      if (!text.includes(head)) text += `\n\n${head}`;
-      text += `\n- ${t}\n`;
-      await putFile("shared/experiences.md", text, f.sha, "体験を追加");
+      const text = sec ? addToSection(f.text, `## ${sec}`, `- ${t}`) : (() => {
+        const head = "## 追加メモ(決裁デスクから)";
+        let x = f.text.replace(/\n+$/, "");
+        if (!x.includes(head)) x += `\n\n${head}`;
+        return x + `\n- ${t}\n`;
+      })();
+      await putFile("shared/experiences.md", text, f.sha, sec ? `体験を追加(${sec})` : "体験を追加");
       toast("追加しました。次の記事から使われます"); $("#exp").value = ""; $("#add").disabled = false;
     } catch (e) { toast(e.message); $("#add").disabled = false; }
   };
