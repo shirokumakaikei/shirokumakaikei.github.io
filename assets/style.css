@@ -319,6 +319,23 @@ a:focus-visible {
 
 .ad-product img[width="1"] { position: absolute; width: 1px; height: 1px; }
 
+/* 商品ボックス(Amazon・楽天のボタン)。ボタンは指で押しやすい高さにする */
+.ad-product-head { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+.ad-product-photo { width: 96px; height: 96px; object-fit: cover; border-radius: 6px; border: 1px solid var(--rule); flex: none; }
+.ad-product-name { font-weight: 700; margin: 0 0 4px; line-height: 1.5; }
+.ad-product-caption { font-size: 0.88rem; color: var(--ink-soft); margin: 0; line-height: 1.6; }
+.ad-product-shops { display: flex; flex-wrap: wrap; gap: 10px; }
+.shop-btn {
+  flex: 1 1 160px;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 48px; padding: 10px 16px;
+  border-radius: 8px; font-weight: 700; text-decoration: none; text-align: center;
+}
+.shop-amazon { background: #ff9900; color: #111; border: 1px solid #e88b00; }
+.shop-rakuten { background: #fff; color: #bf0000; border: 1px solid #bf0000; }
+.shop-btn:hover, .shop-btn:focus-visible { filter: brightness(0.95); text-decoration: none; }
+.amazon-note { font-size: 0.78rem; color: var(--ink-soft); margin: 32px 0 0; }
+
 /* しろくまラボ */
 .lab-env ul { margin: 4px 0 0; padding-left: 1.2em; }
 .lab-env p { margin: 0 0 4px; }

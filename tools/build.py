@@ -38,6 +38,14 @@ AD_LIMIT = {"text": 3, "banner": 1}  # サービスの1記事あたりの合計
 AD_PRODUCTS = 3                    # 商品リンク(type: product)は別枠で1記事3つまで(同じ商品は1回)
 PRODUCT_LABEL = "記事で触れた商品"
 PR_NOTE = '<p class="pr-note">この記事にはプロモーション(広告)を含みます。</p>'
+# Amazon アソシエイトの表記(Amazon のリンクを含む記事の末尾。プライバシーポリシーにも同じ文)
+AMAZON_NOTE = "Amazonのアソシエイトとして、当サイトは適格販売により収入を得ています。"
+# 商品リンクに貼ってよい URL のドメイン(アフィリエイトのリンクだけ。商品ページの直リンクや他のサイトは不可)
+SHOP_HOSTS = {
+    "amazon_url": ("Amazon", ("amazon.co.jp", "amzn.to", "amzn.asia", "link.amazon")),
+    "rakuten_url": ("楽天", ("hb.afl.rakuten.co.jp", "a.r10.to", "r10.to")),
+}
+SHOP_LINK_REL = "nofollow sponsored noopener"
 
 AUTHOR_NOTE = (
     "税理士法人で約3年半、法人・個人の顧問を担当したあと、不動産業の事業会社で経理を担当しています。"
@@ -120,6 +128,33 @@ def ad_type(ad: dict) -> str:
     return "product" if str(ad.get("type", "service")).strip() == "product" else "service"
 
 
+def shop_url_err(key: str, url: str) -> str:
+    """Amazon / 楽天のリンクの形を確かめる。問題なければ空文字。"""
+    from urllib.parse import urlsplit
+    label, hosts = SHOP_HOSTS[key]
+    u = urlsplit(str(url).strip())
+    host = (u.hostname or "").lower()
+    if u.scheme != "https" or not host or re.search(r"[\s\"'<>]", str(url)):
+        return f"{label}のリンクは https:// から始まる URL を1つだけ貼る"
+    if not any(host == h or host.endswith("." + h) for h in hosts):
+        return f"{label}のリンクのドメイン({host})が違う。使えるのは {' / '.join(hosts)}"
+    return ""
+
+
+def product_errs(pid: str, ad: dict) -> list[str]:
+    """商品リンク(type: product)の登録内容。Amazon・楽天のリンク・コードのどれか1つは必須。写真は assets/products/ にある実物の写真。"""
+    errs = []
+    if not any(ad.get(k) for k in ("amazon_url", "rakuten_url", "code")):
+        errs.append(f"商品 {pid}: Amazon のリンク・楽天のリンク・コードのどれかを登録する")
+    for k in SHOP_HOSTS:
+        if ad.get(k) and (e := shop_url_err(k, ad[k])):
+            errs.append(f"商品 {pid}: {e}")
+    photo = str(ad.get("photo") or "")
+    if photo and (not re.fullmatch(r"assets/products/[a-z0-9-]+\.(?:jpg|jpeg|png|webp)", photo) or not (ROOT / photo).exists()):
+        errs.append(f"商品 {pid}: 写真 {photo} が assets/products/ にない")
+    return errs
+
+
 def check_ads(name: str, body: str, strict: bool = True) -> list[str]:
     """広告の目印を検証する。広告コードの直書きは禁止(コードの書き間違い・捏造を防ぐ)。
     strict=False(公開済み記事のビルド)では、停止・削除した広告は表示しないだけでエラーにしない。
@@ -141,8 +176,8 @@ def check_ads(name: str, body: str, strict: bool = True) -> list[str]:
             if ad_type(ads[m.group(1)]) == "product":
                 if kind == "banner":
                     errs.append(f"{name}: 商品 {m.group(1)} にバナーはない。[[ad:{m.group(1)}]] で置く")
-                elif not ads[m.group(1)].get("code"):
-                    errs.append(f"{name}: 商品 {m.group(1)} にリンクのコードが登録されていない")
+                else:
+                    errs += [f"{name}: {e}" for e in product_errs(m.group(1), ads[m.group(1)])]
                 products[m.group(1)] = products.get(m.group(1), 0) + 1
                 continue
             if not ads[m.group(1)].get(kind):
@@ -168,6 +203,34 @@ def check_ads(name: str, body: str, strict: bool = True) -> list[str]:
     return errs
 
 
+def product_box(pid: str, ad: dict, prefix: str = "../") -> str:
+    """商品ボックス。Amazon(主)・楽天(副)のボタンを build が作る。リンクが無ければ登録したコード(かんたんリンクなど)をそのまま出す。"""
+    name = esc(str(ad.get("name") or pid))
+    photo = str(ad.get("photo") or "")
+    img = (f'<img class="ad-product-photo" src="{prefix}{esc(photo)}" alt="{name}(筆者が撮影した実物)" loading="lazy">'
+           if photo and (ROOT / photo).exists() else "")
+    cap = f'<p class="ad-product-caption">{esc(str(ad["caption"]))}</p>' if ad.get("caption") else ""
+    btns = []
+    for k, cls, text in (("amazon_url", "shop-amazon", "Amazon で見る"), ("rakuten_url", "shop-rakuten", "楽天で見る")):
+        if ad.get(k) and not shop_url_err(k, ad[k]):
+            btns.append(f'<a class="shop-btn {cls}" href="{esc(str(ad[k]).strip())}" target="_blank" rel="{SHOP_LINK_REL}">{text}</a>')
+    if btns:
+        links = f'<div class="ad-product-shops">{"".join(btns)}</div>'
+    elif ad.get("code"):
+        links = str(ad["code"]).strip()
+    else:
+        return ""
+    head = f'<div class="ad-product-head">{img}<div><p class="ad-product-name">{name}</p>{cap}</div></div>' if btns else ""
+    return f'\n<div class="ad-product">\n<p class="ad-product-label">{PRODUCT_LABEL}</p>\n{head}\n{links}\n</div>\n'
+
+
+def uses_amazon(body_md: str) -> bool:
+    """本文の商品リンクに Amazon のリンクがあるか(末尾に Amazon アソシエイトの表記を出す)。"""
+    ads = load_ads(active_only=True)
+    return any(ad_type(ads.get(m.group(1)) or {}) == "product" and (ads[m.group(1)].get("amazon_url"))
+               and not m.group(2) for m in AD_RE.finditer(body_md))
+
+
 def expand_ads(body_md: str) -> tuple[str, bool]:
     """目印を広告コードに置き換える。停止・削除した広告の目印は消す。"""
     ads = load_ads(active_only=True)
@@ -177,14 +240,13 @@ def expand_ads(body_md: str) -> tuple[str, bool]:
         nonlocal used
         kind = m.group(2) or "text"
         ad = ads.get(m.group(1)) or {}
-        if ad and ad_type(ad) == "product":  # 商品はボックスで出す(もしもアフィリエイトのかんたんリンクなど、ASP のコードはそのまま)
-            code = "" if kind == "banner" else ad.get("code")
-            if not code:
-                print(f"注意: 商品 {m.group(0)} はコードが無いので表示しません", file=sys.stderr)
+        if ad and ad_type(ad) == "product":  # 商品はボックスで出す
+            box = "" if kind == "banner" else product_box(m.group(1), ad)
+            if not box:
+                print(f"注意: 商品 {m.group(0)} はリンクが無いので表示しません", file=sys.stderr)
                 return ""
             used = True
-            return (f'\n<div class="ad-product">\n<p class="ad-product-label">{PRODUCT_LABEL}</p>\n'
-                    f'{code.strip()}\n</div>\n')
+            return box
         code = ad.get(kind)
         if not code:
             print(f"注意: 広告 {m.group(0)} は停止・削除済みなので表示しません", file=sys.stderr)
@@ -304,6 +366,7 @@ def load_all() -> list[dict]:
             raise BuildError(f"legacy記事 {a['slug']}.html が articles/ にありません")
     md = [parse_md(p) for p in sorted((ROOT / "content/articles").glob("*.md"))]
     errs = [e for a in md for e in validate(a)]
+    errs += [e for pid, ad in load_ads(active_only=True).items() if ad_type(ad) == "product" for e in product_errs(pid, ad)]
     slugs = [a["slug"] for a in legacy + md]
     dup = {s for s in slugs if slugs.count(s) > 1}
     if dup:
@@ -338,6 +401,7 @@ def list_titles(exclude: str = "", section: str = "articles") -> list[tuple[str,
 
 def render_article(a: dict, all_slugs: set[str]) -> str:
     body_md, has_ad = expand_ads(a["body_md"])
+    amazon = uses_amazon(a["body_md"])
     body = markdown.markdown(body_md, extensions=["tables", "sane_lists"])
     for target in re.findall(r'href="([a-z0-9-]+)\.html"', body):
         if target not in all_slugs:
@@ -418,6 +482,7 @@ def render_article(a: dict, all_slugs: set[str]) -> str:
     </div>
 
 {body}
+    {f'<p class="amazon-note">{AMAZON_NOTE}</p>' if amazon else ''}
   </div>
 </main>
 

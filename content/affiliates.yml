@@ -9,8 +9,13 @@
 #
 # type: service(転職サービスなどの広告。書かなければ service)と product(商品リンク)の2種類。
 #   service: text(文字リンク)と banner のコード。上の上限(3種類・文字リンク3・バナー1)
-#   product: code(もしもアフィリエイトのかんたんリンクなど)。目印は [[ad:名前]] だけで、ボックスで表示される。
-#            サービスとは別枠で1記事3つまで(同じ商品は1回)。道具や教材の話をした段落の直後に置く
+#   product: 目印は [[ad:名前]] だけで、ボックスで表示される。サービスとは別枠で1記事3つまで(同じ商品は1回)。道具や教材の話をした段落の直後に置く
+#            amazon_url(Amazon アソシエイトのリンク。メイン)・rakuten_url(楽天アフィリエイトのリンク。任意)・code(かんたんリンクなど)のどれか1つは必須
+#            amazon_url / rakuten_url は URL だけを書く。ボタン(<a target="_blank" rel="nofollow sponsored noopener">)は build.py が作る
+#            使えるドメイン: Amazon は amazon.co.jp / amzn.to / amzn.asia / link.amazon、楽天は hb.afl.rakuten.co.jp / a.r10.to / r10.to
+#            リンクがあればボタンを出し、code は使わない。caption はボックスの一言説明(価格は書かない)
+#            photo は筆者が撮った実物の写真(assets/products/<名前>.jpg。デスクが縮小して置く)。Amazon・楽天の商品画像は使わない
+#            Amazon のリンクがある商品を置いた記事は、末尾に Amazon アソシエイトの表記が自動で付く
 #
 # ここに置くのはビルドに必要なもの(name / type / active / コード)だけ。
 # どんなものか(about)・合う記事(fit)・合わない記事(avoid)・置き方(lead_hint)、商品の誰が使っていたか(source)と感想(note)は、
