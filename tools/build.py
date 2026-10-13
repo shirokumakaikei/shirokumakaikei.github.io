@@ -125,8 +125,6 @@ def check_ads(name: str, body: str, strict: bool = True) -> list[str]:
                     errs.append(f"{name}: 広告 {m.group(1)} は使えません(登録が無いか停止中)")
                 continue
             if ad_type(ads[m.group(1)]) == "product":
-                if ads[m.group(1)].get("source") not in ("self", "classmate", "senior"):
-                    errs.append(f"{name}: 商品 {m.group(1)} に source(self / classmate / senior)が無い")
                 if kind == "banner":
                     errs.append(f"{name}: 商品 {m.group(1)} にバナーはない。[[ad:{m.group(1)}]] で置く")
                 elif not ads[m.group(1)].get("code"):

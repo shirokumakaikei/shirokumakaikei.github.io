@@ -1069,8 +1069,6 @@ function dumpAds({ head, ads }) {
     out.push(`  ${a.id}:`, `    active: ${a.active ? "true" : "false"}`, `    type: ${a.type === "product" ? "product" : "service"}`);
     for (const [k] of AD_FIELDS) if (a[k]) out.push(`    ${k}: ${yq(a[k])}`);
     if (a.type === "product") {
-      out.push(`    source: ${AD_SOURCES[a.source] ? a.source : "self"}`);
-      if (a.note) out.push(`    note: ${yq(a.note)}`);
     }
     for (const k of a.type === "product" ? ["code"] : ["text", "banner"]) if (a[k]) out.push(`    ${k}: |`, ...a[k].trim().split("\n").map((l) => "      " + l.trimEnd()));
   }
@@ -1079,8 +1077,32 @@ function dumpAds({ head, ads }) {
 async function saveAds(data, sha, msg) {
   await putFileTo(SITE_REPO, ADS_PATH, dumpAds(data), sha, msg);
 }
+// 商品を誰が使っていたか(source)と感想(note)は、非公開の本社リポジトリに置く(公開の affiliates.yml には書かない)
+const PN_PATH = "shared/product-notes.yml";
+const PN_HEAD = "# 商品リンクを誰が使っていたか(source)と使用状況・感想(note)。非公開。決裁デスクの「広告を管理する」が書く。\n" +
+  "# source: self(本人)/ classmate(同じ教室の友人)/ senior(職場の先輩税理士が受験生時代に)。記事はこの立場どおりに書き分ける\n" +
+  "# 商品の名前・合う記事・コードは公開リポジトリの content/affiliates.yml。ここに無い(誰も使っていない)商品は記事に使わない";
+async function loadProductNotes() {
+  let f = null;
+  try { f = await getFile(PN_PATH); } catch (e) { if (!/404/.test(e.message)) throw e; }
+  const notes = {}; let cur = null, m;
+  for (const l of (f ? f.text : "").split("\n")) {
+    if ((m = l.match(/^  ([a-z0-9-]+):\s*$/))) { cur = notes[m[1]] = { source: "", note: "" }; continue; }
+    if (cur && (m = l.match(/^    (source|note):\s*(.*)$/))) cur[m[1]] = unq(m[2]);
+  }
+  return { notes, sha: f?.sha };
+}
+async function saveProductNotes(notes, sha, msg) {
+  const out = [PN_HEAD, "products:"];
+  for (const [id, n] of Object.entries(notes)) {
+    if (!AD_SOURCES[n.source]) continue;
+    out.push(`  ${id}:`, `    source: ${n.source}`);
+    if (n.note) out.push(`    note: ${yq(n.note)}`);
+  }
+  await putFileTo(OFFICE, PN_PATH, out.join("\n") + "\n", sha, msg);
+}
 async function adsView() {
-  const f = await getFile(ADS_PATH, "", SITE_REPO);
+  const [f, pn] = await Promise.all([getFile(ADS_PATH, "", SITE_REPO), loadProductNotes().catch(() => ({ notes: {} }))]);
   const data = parseAds(f.text);
   const live = data.ads.filter((a) => a.active).length;
   view.innerHTML = `
@@ -1092,7 +1114,7 @@ async function adsView() {
     const d = document.createElement("div"); d.className = "item"; d.style.cursor = "default"; d.style.flexWrap = "wrap";
     d.innerHTML = `<span class="chip ${a.active ? "ok" : "idle"}">${a.active ? "配信中" : "停止中"}</span>
       <div class="main" style="flex:1 1 60%;min-width:0"><div class="t">${esc(a.name || a.id)}</div>
-      <div class="m">${AD_TYPES[a.type]} ・ ${esc(a.about || "")}<br>目印: [[ad:${esc(a.id)}]] ・ ${a.type === "product" ? esc(AD_SOURCES[a.source] || "使っていた人が未設定") : [a.text && "文字リンク", a.banner && "バナー"].filter(Boolean).join("・")}</div></div>
+      <div class="m">${AD_TYPES[a.type]} ・ ${esc(a.about || "")}<br>目印: [[ad:${esc(a.id)}]] ・ ${a.type === "product" ? esc(AD_SOURCES[pn.notes[a.id]?.source] || "誰が使っていたか未登録(記事に使われない)") : [a.text && "文字リンク", a.banner && "バナー"].filter(Boolean).join("・")}</div></div>
       <div class="row" style="flex-basis:100%;justify-content:flex-end"><button class="sub" data-edit>編集</button><button class="sub" data-toggle>${a.active ? "停止する" : "再開する"}</button><button class="danger" data-del>削除</button></div>`;
     d.querySelector("[data-edit]").onclick = () => go(() => adForm(a.id), "広告を編集");
     d.querySelector("[data-toggle]").onclick = async (e) => {
@@ -1104,6 +1126,7 @@ async function adsView() {
     twoTap(d.querySelector("[data-del]"), "本当に削除", async () => {
       data.ads.splice(i, 1);
       await saveAds(data, f.sha, `広告を削除: ${a.name || a.id}`);
+      if (pn.notes[a.id]) { delete pn.notes[a.id]; await saveProductNotes(pn.notes, pn.sha, `商品メモを削除: ${a.name || a.id}`).catch(() => {}); }
       toast("削除しました"); go(adsView, "広告", false);
     });
     $("#adl").appendChild(d);
@@ -1111,10 +1134,11 @@ async function adsView() {
   $("#newAd").onclick = () => go(() => adForm(null), "広告を追加");
 }
 async function adForm(id) {
-  const f = await getFile(ADS_PATH, "", SITE_REPO);
+  const [f, pn] = await Promise.all([getFile(ADS_PATH, "", SITE_REPO), loadProductNotes()]);
   const data = parseAds(f.text);
-  const a = id ? data.ads.find((x) => x.id === id) : { active: true };
-  if (!a) throw new Error("その広告は見つかりませんでした");
+  const a0 = id ? data.ads.find((x) => x.id === id) : { active: true };
+  if (!a0) throw new Error("その広告は見つかりませんでした");
+  const a = { ...a0, ...(pn.notes[a0.id] || {}) };
   const type0 = a.type || "service";
   view.innerHTML = `
   <div class="card pad stack" style="margin-top:16px">
@@ -1128,7 +1152,7 @@ async function adForm(id) {
     </div>
     <div class="stack" id="prodBox">
       <label>誰が使っていたか(必須)<select id="ad_source"><option value="">選んでください</option>${Object.entries(AD_SOURCES).map(([k, v]) => `<option value="${k}" ${k === a.source ? "selected" : ""}>${v}</option>`).join("")}</select></label>
-      <p class="meta">誰も使っていない商品は登録しないでください。記事は、選んだ立場のとおりに書き分けます(友人・先輩の物を自分が使っていたようには書きません)。</p>
+      <p class="meta">誰も使っていない商品は登録しないでください。記事は、選んだ立場のとおりに書き分けます(友人・先輩の物を自分が使っていたようには書きません)。この2つの欄は非公開の本社リポジトリに保存し、公開リポジトリには書きません。</p>
       <label>使っていた様子や感想(記事に書けるのはここにある範囲だけ)<textarea id="ad_note" rows="3" placeholder="例:簿記論の受験中に2年使っていた。論点ごとの例題が多くて復習しやすかった(友人・先輩の名前や会社名は書かない)">${esc(a.note || "")}</textarea></label>
       <label>商品リンクのコード<textarea id="ad_code" rows="5" placeholder="もしもアフィリエイトの「かんたんリンク」のコードなどをまとめて貼る">${esc(a.code || "")}</textarea></label>
     </div>
@@ -1166,14 +1190,21 @@ async function adForm(id) {
     const next = { ...a, id: nid, type };
     for (const [k] of AD_FIELDS) next[k] = v(k);
     if (type === "product") {
-      next.code = v("code"); next.source = v("source"); next.note = v("note");
+      next.code = v("code");
       next.text = ""; next.banner = "";
     } else {
-      next.text = v("text"); next.banner = v("banner"); next.code = ""; next.source = ""; next.note = "";
+      next.text = v("text"); next.banner = v("banner"); next.code = "";
     }
     if (id) data.ads[data.ads.findIndex((x) => x.id === id)] = next; else data.ads.push(next);
     $("#saveAd").disabled = true;
     try {
+      if (type === "product") {  // 先に非公開側(誰が使っていたか)。失敗したら公開側は書かない
+        pn.notes[nid] = { source: v("source"), note: v("note") };
+        await saveProductNotes(pn.notes, pn.sha, `商品メモを${pn.sha && id ? "更新" : "追加"}: ${next.name}`);
+      } else if (pn.notes[nid]) {
+        delete pn.notes[nid];
+        await saveProductNotes(pn.notes, pn.sha, `商品メモを削除: ${next.name}`);
+      }
       await saveAds(data, f.sha, `広告を${id ? "更新" : "追加"}: ${next.name}`);
       toast("保存しました。今夜の記事から使われます"); history_.pop(); go(adsView, "広告", false);
     } catch (e) { toast(e.message); $("#saveAd").disabled = false; }
