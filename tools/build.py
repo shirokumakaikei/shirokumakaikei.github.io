@@ -45,6 +45,19 @@ AUTHOR_NOTE = (
 )
 AUTHOR_DESC = "税理士法人を経て不動産業の事業会社で経理を担当。税理士試験は科目合格。"
 
+# しろくまラボ(技術の記録)。content/lab/<slug>.md → lab/<slug>.html。ナビには出さず、トップとフッターから入る
+LAB_NAME = "しろくまラボ"
+LAB_LEAD = "会計とは別に、自宅のサーバーやネットワークなど、手元の機器で試したことを残している技術の記録です。"
+LAB_AUTHOR_NOTE = (
+    "税理士法人で約3年半、法人・個人の顧問を担当したあと、不動産業の事業会社で経理を担当しています。"
+    "工学部(電気電子)出身で、自宅の機器で試したことをこのラボに残しています。"
+)
+LAB_DISCLAIMER = (
+    "この記事は筆者の環境で試した記録です。手順や設定を参考にした結果生じたデータの消失、機器の故障、"
+    "セキュリティ上の問題などについて、筆者は責任を負いません。作業の前にバックアップを取り、ご自身の判断で行ってください。"
+    "内容は作業時期のものです。ソフトウェアの更新で手順や画面が変わることがあります。"
+)
+
 HEADER = """<header class="site-header">
   <div class="wrap">
     <a class="brand" href="{p}index.html">しろくま会計<span>SHIROKUMA KAIKEI</span></a>
@@ -62,7 +75,8 @@ FOOTER = """<footer class="site-footer">
     <span>
       <a href="{p}about.html">運営者情報</a> ／
       <a href="{p}privacy.html">プライバシーポリシー</a> ／
-      <a href="{p}contact.html">お問い合わせ</a>
+      <a href="{p}contact.html">お問い合わせ</a> ／
+      <a href="{p}lab/index.html">しろくまラボ</a>
     </span>
   </div>
 </footer>"""
@@ -181,6 +195,14 @@ def expand_ads(body_md: str) -> tuple[str, bool]:
     return AD_RE.sub(rep, body_md), used
 
 
+def secret_errs(a: dict) -> list[str]:
+    """IP アドレス・トークン・メールアドレスらしき文字列(tools/secret_scan.py)。記事には載せない。"""
+    import secret_scan
+    text = "\n".join(str(a.get(k, "")) for k in ["title", "description", "summary", "worked_on", "body_md"]) \
+        + "\n" + "\n".join(map(str, a.get("environment") or []))
+    return [f"{a['slug']}: {kind}「{secret_scan.mask(hit)}」を載せない" for _, kind, hit in secret_scan.scan_text(text)]
+
+
 def validate(a: dict) -> list[str]:
     errs = []
     name = a["slug"]
@@ -218,7 +240,60 @@ def validate(a: dict) -> list[str]:
     h2 = a.get("body_md", "").count("\n## ") + a.get("body_md", "").startswith("## ")
     if not (3 <= h2 <= 7):
         errs.append(f"{name}: 見出し(##)が{h2}個。4〜6個にする")
+    errs += secret_errs(a)
     return errs
+
+
+def validate_lab(a: dict) -> list[str]:
+    """しろくまラボの記事。作業時期と動作確認した環境が必須。広告は置かない。"""
+    errs = []
+    name = a["slug"]
+    if not SLUG_RE.match(name):
+        errs.append(f"lab/{name}: slugは半角英小文字・数字・ハイフンのみ")
+    for k in ["title", "description", "summary", "worked_on", "environment", "date"]:
+        if not a.get(k):
+            errs.append(f"lab/{name}: front matter に {k} がありません")
+    env = a.get("environment")
+    if env and not (isinstance(env, list) and all(isinstance(x, str) and x.strip() for x in env)):
+        errs.append(f"lab/{name}: environment は「- Raspberry Pi 4(8GB)」のような箇条書き(文字列のリスト)")
+    if a.get("date"):
+        try:
+            a["date"] = date.fromisoformat(str(a["date"]))
+        except ValueError:
+            errs.append(f"lab/{name}: date は YYYY-MM-DD")
+    if len(a.get("title", "")) > 48:
+        errs.append(f"lab/{name}: title が長すぎます(48字以内)")
+    if not (50 <= len(a.get("description", "")) <= 160):
+        errs.append(f"lab/{name}: description は50〜160字")
+    body = a.get("body_md", "")
+    joined = " ".join(str(a.get(k, "")) for k in ["title", "description", "summary", "worked_on", "body_md"])
+    for b in BANNED:
+        if b in joined:
+            errs.append(f"lab/{name}: 禁止文字 {b!r} が含まれています")
+    if AD_RE.search(body):
+        errs.append(f"lab/{name}: しろくまラボの記事に広告は置かない")
+    if "<script" in body.lower():
+        errs.append(f"lab/{name}: 本文に<script>は使えません")
+    plain = len(re.sub(r"[#*\[\]()\-\s`]", "", body))
+    if not (1500 <= plain <= 8000):
+        errs.append(f"lab/{name}: 本文が{plain}字。2,000〜5,000字を目安に収める")
+    h2 = body.count("\n## ") + body.startswith("## ")
+    if not (3 <= h2 <= 8):
+        errs.append(f"lab/{name}: 見出し(##)が{h2}個。4〜7個にする")
+    errs += [e.replace(f"{name}: ", f"lab/{name}: ", 1) for e in secret_errs(a)]
+    return errs
+
+
+def load_lab() -> list[dict]:
+    """しろくまラボの記事(content/lab/*.md)。公開日が来たものだけ、新しい順。"""
+    md = [parse_md(p) for p in sorted((ROOT / "content/lab").glob("*.md"))]
+    errs = [e for a in md for e in validate_lab(a)]
+    if errs:
+        raise BuildError("\n".join(errs))
+    today = date.today()
+    published = [a for a in md if a["date"] <= today and not a.get("draft")]
+    published.sort(key=lambda a: (a["date"], a["slug"]), reverse=True)
+    return published
 
 
 def load_all() -> list[dict]:
@@ -241,11 +316,15 @@ def load_all() -> list[dict]:
     return published + legacy  # 新しい順
 
 
-def list_titles(exclude: str = "") -> list[tuple[str, str]]:
-    """検証せずに (slug, title) を集める。生成途中の壊れた下書きがあっても落ちない。"""
-    legacy = yaml.safe_load((ROOT / "content/legacy.yml").read_text(encoding="utf-8"))["articles"]
-    out = [(a["slug"], a["title"]) for a in legacy]
-    for p in sorted((ROOT / "content/articles").glob("*.md")):
+def list_titles(exclude: str = "", section: str = "articles") -> list[tuple[str, str]]:
+    """検証せずに (slug, title) を集める。生成途中の壊れた下書きがあっても落ちない。
+    section="lab" ならしろくまラボ(content/lab)の記事。"""
+    if section == "lab":
+        out = []
+    else:
+        legacy = yaml.safe_load((ROOT / "content/legacy.yml").read_text(encoding="utf-8"))["articles"]
+        out = [(a["slug"], a["title"]) for a in legacy]
+    for p in sorted((ROOT / "content" / section).glob("*.md")):
         if p.stem == exclude:
             continue
         try:
@@ -349,6 +428,145 @@ def render_article(a: dict, all_slugs: set[str]) -> str:
 """
 
 
+def lab_head(title: str, desc: str, url: str, og_type: str = "article") -> str:
+    t = esc(title)
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{t}</title>
+<meta name="description" content="{esc(desc)}">
+<link rel="canonical" href="{url}">
+<meta property="og:type" content="{og_type}">
+<meta property="og:title" content="{t}">
+<meta property="og:description" content="{esc(desc)}">
+<meta property="og:url" content="{url}">
+<meta property="og:site_name" content="しろくま会計">
+<meta property="og:locale" content="ja_JP">
+<meta name="twitter:card" content="summary">
+<link rel="stylesheet" href="../assets/style.css">"""
+
+
+def render_lab_article(a: dict, lab_slugs: set[str], article_slugs: set[str]) -> str:
+    body = markdown.markdown(a["body_md"], extensions=["tables", "sane_lists", "fenced_code"])
+    for target in re.findall(r'href="([a-z0-9-]+)\.html"', body):
+        if target not in lab_slugs and target != "index":
+            raise BuildError(f"lab/{a['slug']}: 内部リンク先 {target}.html がしろくまラボにありません")
+    for target in re.findall(r'href="\.\./articles/([a-z0-9-]+)\.html"', body):
+        if target not in article_slugs and target != "index":
+            raise BuildError(f"lab/{a['slug']}: 内部リンク先 ../articles/{target}.html が存在しません")
+    url = f"{BASE}/lab/{a['slug']}.html"
+    ld = {
+        "@context": "https://schema.org",
+        "@graph": [
+            {
+                "@type": "TechArticle",
+                "headline": a["title"],
+                "description": a["description"],
+                "datePublished": a["date"].isoformat(),
+                "dateModified": str(a.get("updated") or a["date"]),
+                "author": {"@type": "Person", "name": "しろくま", "url": f"{BASE}/about.html"},
+                "publisher": {"@type": "Organization", "name": "しろくま会計", "url": f"{BASE}/"},
+                "mainEntityOfPage": {"@type": "WebPage", "@id": url},
+                "inLanguage": "ja",
+                "proficiencyLevel": "Beginner",
+            },
+            {
+                "@type": "BreadcrumbList",
+                "itemListElement": [
+                    {"@type": "ListItem", "position": 1, "name": "ホーム", "item": f"{BASE}/"},
+                    {"@type": "ListItem", "position": 2, "name": LAB_NAME, "item": f"{BASE}/lab/index.html"},
+                    {"@type": "ListItem", "position": 3, "name": a["title"]},
+                ],
+            },
+        ],
+    }
+    t = esc(a["title"])
+    env = "".join(f"<li>{esc(str(x))}</li>" for x in a["environment"])
+    return f"""{lab_head(f"{a['title']} | {LAB_NAME} | しろくま会計", a["description"], url)}
+<script type="application/ld+json">
+{json.dumps(ld, ensure_ascii=False, indent=2)}
+</script>
+</head>
+<body>
+
+{HEADER.format(p="../")}
+
+<section class="hero">
+  <div class="wrap">
+    <nav class="breadcrumb" aria-label="パンくず"><a href="../index.html">ホーム</a> ／ <a href="index.html">{LAB_NAME}</a> ／ <span>{t}</span></nav>
+    <h1>{t}</h1>
+  </div>
+</section>
+
+<main>
+  <div class="wrap">
+    <div class="note lab-env">
+      <p><strong>作業時期</strong> {esc(str(a["worked_on"]))}</p>
+      <p><strong>動作確認した環境</strong></p>
+      <ul>{env}</ul>
+    </div>
+
+{body}
+
+    <div class="note lab-disclaimer">
+      <p><strong>免責</strong></p>
+      <p>{LAB_DISCLAIMER}</p>
+    </div>
+    <div class="note">
+      <p><strong>この記事を書いた人</strong></p>
+      <p>{LAB_AUTHOR_NOTE}</p>
+    </div>
+  </div>
+</main>
+
+{FOOTER.format(p="../", year=date.today().year)}
+
+</body>
+</html>
+"""
+
+
+def render_lab_index(lab: list[dict]) -> str:
+    url = f"{BASE}/lab/index.html"
+    lis = "\n".join(
+        f"""      <li>
+        <a href="{a['slug']}.html">{esc(a['title'])}</a><br>
+        {esc(a['summary'])}<br>
+        <span class="lab-meta">作業時期: {esc(str(a['worked_on']))}</span>
+      </li>""" for a in lab)
+    body = f"    <ul>\n{lis}\n    </ul>" if lab else "    <p>記事は準備中です。</p>"
+    return f"""{lab_head(f"{LAB_NAME} | しろくま会計", LAB_LEAD, url, "website")}
+</head>
+<body>
+
+{HEADER.format(p="../")}
+
+<section class="hero">
+  <div class="wrap">
+    <nav class="breadcrumb" aria-label="パンくず"><a href="../index.html">ホーム</a> ／ <span>{LAB_NAME}</span></nav>
+    <h1>{LAB_NAME}</h1>
+    <p class="lead">{LAB_LEAD}</p>
+  </div>
+</section>
+
+<main>
+  <div class="wrap">
+    <p>どの記事も、作業した時期と、動作を確かめた機器・ソフトのバージョンを書いています。手順を試すときは、ご自身の環境との違いに気をつけてください。会計の記事は<a href="../articles/index.html">記事一覧</a>からどうぞ。</p>
+
+{body}
+
+  </div>
+</main>
+
+{FOOTER.format(p="../", year=date.today().year)}
+
+</body>
+</html>
+"""
+
+
 def render_index(articles: list[dict]) -> str:
     sections = []
     for cat in CATEGORIES:
@@ -425,7 +643,7 @@ def render_home(src: str, articles: list[dict]) -> str:
     return new
 
 
-def render_sitemap(articles: list[dict]) -> str:
+def render_sitemap(articles: list[dict], lab: list[dict] | None = None) -> str:
     rows = [
         (f"{BASE}/", "weekly", "1.0", None),
         (f"{BASE}/articles/index.html", "weekly", "0.9", None),
@@ -433,6 +651,9 @@ def render_sitemap(articles: list[dict]) -> str:
     for a in articles:
         lm = a["date"].isoformat() if not a["legacy"] else None
         rows.append((f"{BASE}/articles/{a['slug']}.html", "monthly", "0.8", lm))
+    rows.append((f"{BASE}/lab/index.html", "monthly", "0.5", None))
+    for a in lab or []:
+        rows.append((f"{BASE}/lab/{a['slug']}.html", "yearly", "0.5", a["date"].isoformat()))
     rows += [(f"{BASE}/about.html", "yearly", "0.5", None),
              (f"{BASE}/contact.html", "yearly", "0.3", None),
              (f"{BASE}/privacy.html", "yearly", "0.2", None)]
@@ -453,7 +674,12 @@ def build(out: Path) -> list[dict]:
     rendered = {f"articles/{a['slug']}.html": render_article(a, slugs) for a in articles if not a["legacy"]}
     rendered["articles/index.html"] = render_index(articles)
     rendered["index.html"] = render_home((ROOT / "index.html").read_text(encoding="utf-8"), articles)
-    rendered["sitemap.xml"] = render_sitemap(articles)
+    lab = load_lab()
+    lab_slugs = {a["slug"] for a in lab}
+    for a in lab:
+        rendered[f"lab/{a['slug']}.html"] = render_lab_article(a, lab_slugs, slugs)
+    rendered["lab/index.html"] = render_lab_index(lab)
+    rendered["sitemap.xml"] = render_sitemap(articles, lab)
 
     if out.exists():
         shutil.rmtree(out)
@@ -478,7 +704,10 @@ def main() -> int:
             for a in articles:
                 if not a["legacy"]:
                     render_article(a, slugs)
-            print(f"OK: {len(articles)}記事")
+            lab = load_lab()
+            for a in lab:
+                render_lab_article(a, {x["slug"] for x in lab}, slugs)
+            print(f"OK: {len(articles)}記事、{LAB_NAME} {len(lab)}記事")
         else:
             articles = build(Path(args.out))
             print(f"built {len(articles)} articles -> {args.out}")

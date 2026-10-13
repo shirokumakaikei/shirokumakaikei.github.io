@@ -318,3 +318,11 @@ a:focus-visible {
 .ad-product img { max-width: 100%; height: auto; }
 
 .ad-product img[width="1"] { position: absolute; width: 1px; height: 1px; }
+
+/* しろくまラボ */
+.lab-env ul { margin: 4px 0 0; padding-left: 1.2em; }
+.lab-env p { margin: 0 0 4px; }
+.lab-disclaimer { margin-top: 32px; font-size: 0.9em; }
+.lab-meta { font-size: 0.85em; color: #666; }
+main pre { overflow-x: auto; padding: 12px; background: #f5f6f8; border-radius: 6px; font-size: 0.9em; }
+main code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
