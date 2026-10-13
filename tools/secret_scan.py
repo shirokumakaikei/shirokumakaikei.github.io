@@ -68,6 +68,8 @@ def _ip_ok(s: str) -> bool:
         return True  # 999.1.1.1 のような IP でない数字の並び
     if addr in OK_IPS or str(ip).startswith("255.255."):  # サブネットマスク
         return True
+    if any(ip in n for n in DOC_NETS):  # 文書用のアドレス(192.0.2.0/24 などの範囲の書き方も)
+        return True
     if "/" in s:  # 10.0.0.0/8 のような広い範囲の書き方は、家の機器やネットワークを指さないので許す(/24 などは伏せる)
         try:
             return ipaddress.ip_network(s, strict=True).prefixlen <= 16
