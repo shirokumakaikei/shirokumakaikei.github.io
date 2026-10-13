@@ -1132,6 +1132,27 @@ const AD_FIELDS = [
 const AD_TYPES = { service: "サービス", product: "商品" };
 // 商品を誰が使っていたか(必須)。記事はこの立場どおりに書き分ける。誰も使っていない商品は登録しない
 const AD_SOURCES = { self: "自分が使っていた", classmate: "同じ教室の友人が使っていた", senior: "職場の先輩税理士が受験生時代に使っていた" };
+// 商品で公開側に書く1行の項目(ボックスの一言説明・Amazon と楽天のリンク・実物の写真)
+const PRODUCT_PUBLIC = ["caption", "amazon_url", "rakuten_url", "photo"];
+// 貼ってよいリンクのドメイン(公開リポジトリの build.py の SHOP_HOSTS と同じ)
+const SHOP_HOSTS = { amazon_url: ["Amazon", ["amazon.co.jp", "amzn.to", "amzn.asia", "link.amazon"]],
+                     rakuten_url: ["楽天", ["hb.afl.rakuten.co.jp", "a.r10.to", "r10.to"]] };
+function shopUrlErr(key, url) {
+  const [label, hosts] = SHOP_HOSTS[key];
+  let u; try { u = new URL(url); } catch { return `${label}のリンクは https:// から始まる URL を1つだけ貼ってください`; }
+  if (u.protocol !== "https:" || /[\s"'<>]/.test(url)) return `${label}のリンクは https:// から始まる URL を1つだけ貼ってください`;
+  const h = u.hostname.toLowerCase();
+  if (!hosts.some((x) => h === x || h.endsWith("." + x))) return `${label}のリンクではありません(${h})。使えるのは ${hosts.join(" / ")} のリンクです`;
+  return "";
+}
+// 実物の写真を、長い辺 1000px までの JPEG にして base64 で返す(撮影場所などの情報 EXIF はここで落ちる)
+async function photoJpeg(file) {
+  const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+  const r = Math.min(1, 1000 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas"); c.width = Math.round(bmp.width * r); c.height = Math.round(bmp.height * r);
+  c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.85).split(",")[1];
+}
 const unq = (v) => { v = v.trim(); if (/^".*"$/.test(v)) return v.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\"); if (/^'.*'$/.test(v)) return v.slice(1, -1).replace(/''/g, "'"); return v; };
 function parseAds(text) {
   const lines = text.split("\n");
@@ -1159,6 +1180,7 @@ function dumpAds({ head, ads }) {
   for (const a of ads) {
     out.push(`  ${a.id}:`, `    active: ${a.active ? "true" : "false"}`, `    type: ${a.type === "product" ? "product" : "service"}`);
     if (a.name) out.push(`    name: ${yq(a.name)}`);  // about・fit などは非公開側(saveAdNotes)にだけ書く
+    if (a.type === "product") for (const k of PRODUCT_PUBLIC) if (a[k]) out.push(`    ${k}: ${yq(a[k])}`);
     for (const k of a.type === "product" ? ["code"] : ["text", "banner"]) if (a[k]) out.push(`    ${k}: |`, ...a[k].trim().split("\n").map((l) => "      " + l.trimEnd()));
   }
   return out.join("\n") + "\n";
@@ -1249,7 +1271,13 @@ async function adForm(id) {
       <label>誰が使っていたか(必須)<select id="ad_source"><option value="">選んでください</option>${Object.entries(AD_SOURCES).map(([k, v]) => `<option value="${k}" ${k === a.source ? "selected" : ""}>${v}</option>`).join("")}</select></label>
       <p class="meta">誰も使っていない商品は登録しないでください。記事は、選んだ立場のとおりに書き分けます(友人・先輩の物を自分が使っていたようには書きません)。この2つの欄は非公開の本社リポジトリに保存し、公開リポジトリには書きません。</p>
       <label>使っていた様子や感想(記事に書けるのはここにある範囲だけ)<textarea id="ad_note" rows="3" placeholder="例:簿記論の受験中に2年使っていた。論点ごとの例題が多くて復習しやすかった(友人・先輩の名前や会社名は書かない)">${esc(a.note || "")}</textarea></label>
-      <label>商品リンクのコード<textarea id="ad_code" rows="5" placeholder="もしもアフィリエイトの「かんたんリンク」のコードなどをまとめて貼る">${esc(a.code || "")}</textarea></label>
+      <p class="meta">ここから下は公開ページに出ます。リンクは URL だけを貼ってください(ボタンはサイトが作ります)。Amazon・楽天・コードのどれか1つは必須です。</p>
+      <label>ボックスに出す一言説明(任意)<input type="text" id="ad_caption" value="${esc(a.caption || "")}" placeholder="例:税理士試験の受験生がよく使う実務電卓(価格は書かない)"></label>
+      <label>Amazon のリンク(メイン)<input type="url" id="ad_amazon_url" value="${esc(a.amazon_url || "")}" placeholder="https://amzn.to/... (アソシエイトのリンク)"></label>
+      <label>楽天のリンク(任意)<input type="url" id="ad_rakuten_url" value="${esc(a.rakuten_url || "")}" placeholder="https://a.r10.to/... (楽天アフィリエイトのリンク)"></label>
+      <label>実物の写真(任意。自分で撮ったものだけ。Amazon や楽天の商品画像は使わない)<input type="file" id="ad_photo" accept="image/jpeg,image/png,image/webp,image/heic"></label>
+      ${a.photo ? `<div class="row" id="photoNow"><img src="${SITE}/${esc(a.photo)}?v=${Date.now()}" alt="" style="width:72px;height:72px;object-fit:cover;border-radius:6px;border:1px solid var(--line)"><label class="row" style="gap:6px"><input type="checkbox" id="ad_photo_rm">写真を外す</label></div>` : ""}
+      <label>商品リンクのコード(任意。もしもアフィリエイトの「かんたんリンク」など。Amazon・楽天のリンクがあればそちらを使う)<textarea id="ad_code" rows="4" placeholder="もしもアフィリエイトの「かんたんリンク」のコードなどをまとめて貼る">${esc(a.code || "")}</textarea></label>
     </div>
   </div>
   <div class="bar"><button class="act" id="saveAd">${id ? "保存する" : "追加する"}</button></div>`;
@@ -1267,10 +1295,13 @@ async function adForm(id) {
     for (const [k, label, , req] of AD_FIELDS) if (req && !v(k)) return toast(`${label}を入れてください`);
     if (type === "product") {
       const c = v("code");
-      if (!c) return toast("商品リンクのコードを貼ってください");
+      if (!c && !v("amazon_url") && !v("rakuten_url")) return toast("Amazon のリンク・楽天のリンク・コードのどれかを入れてください");
+      for (const k of ["amazon_url", "rakuten_url"]) { const e = v(k) && shopUrlErr(k, v(k)); if (e) return toast(e); }
       // <script> は、もしもアフィリエイトのかんたんリンク(msmstatic.com)だけ通す
-      if (/<script/i.test(c) && !/msmstatic\.com|MoshimoAffiliateEasyLink/i.test(c)) return toast("<script> を含むコードは、もしもアフィリエイトの「かんたんリンク」だけ使えます");
-      if (!/<a\s[^>]*href=|msmaflink/i.test(c)) return toast("商品リンクのコードに <a href=...> かかんたんリンクがありません");
+      if (c && /<script/i.test(c) && !/msmstatic\.com|MoshimoAffiliateEasyLink/i.test(c)) return toast("<script> を含むコードは、もしもアフィリエイトの「かんたんリンク」だけ使えます");
+      if (c && !/<a\s[^>]*href=|msmaflink/i.test(c)) return toast("商品リンクのコードに <a href=...> かかんたんリンクがありません");
+      if (/[—―]/.test(v("caption"))) return toast("エムダッシュは使えません");
+      if (/\d[\d,]*\s*円|¥|￥/.test(v("caption"))) return toast("一言説明に価格は書かないでください(変わるため)");
       if (!AD_SOURCES[v("source")]) return toast("誰が使っていたかを選んでください(誰も使っていない商品は登録しない)");
       if (/—/.test(v("note"))) return toast("エムダッシュは使えません");
     } else {
@@ -1287,19 +1318,33 @@ async function adForm(id) {
     const note = {};                                               // 非公開側に書くもの
     for (const [k] of AD_FIELDS) if (k !== "name") note[k] = v(k);
     if (type === "product") { note.source = v("source"); note.note = v("note"); }
+    const photoFile = type === "product" ? $("#ad_photo").files[0] : null;
+    const photoPath = `assets/products/${nid}.jpg`;
     if (type === "product") {
       next.code = v("code");
+      for (const k of ["caption", "amazon_url", "rakuten_url"]) next[k] = v(k);
+      next.photo = photoFile ? photoPath : ($("#ad_photo_rm")?.checked ? "" : a0.photo || "");
       next.text = ""; next.banner = "";
     } else {
       next.text = v("text"); next.banner = v("banner"); next.code = "";
+      for (const k of PRODUCT_PUBLIC) next[k] = "";
     }
     if (id) data.ads[data.ads.findIndex((x) => x.id === id)] = next; else data.ads.push(next);
     $("#saveAd").disabled = true;
     try {
       // 先に非公開側(説明・合う記事・誰が使っていたか)。失敗したら公開側は書かない
       pn.notes[nid] = note;
+      if (photoFile) {  // 実物の写真は公開リポジトリの assets/products/<目印>.jpg に置く
+        const cur = await gh(`/repos/${SITE_REPO}/contents/${photoPath}`).catch(() => null);
+        await gh(`/repos/${SITE_REPO}/contents/${photoPath}`, { method: "PUT", body: JSON.stringify({
+          message: `商品の写真を${cur ? "差し替え" : "追加"}: ${next.name}`, content: await photoJpeg(photoFile), ...(cur?.sha ? { sha: cur.sha } : {}) }) });
+      }
       await saveAdNotes(pn.notes, pn.sha, `広告の説明を${id ? "更新" : "追加"}: ${next.name}`);
       await saveAds(data, f.sha, `広告を${id ? "更新" : "追加"}: ${next.name}`);
+      if (type === "product" && !photoFile && a0.photo && !next.photo) {  // 外した写真は公開リポジトリからも消す
+        const cur = await gh(`/repos/${SITE_REPO}/contents/${a0.photo}`).catch(() => null);
+        if (cur?.sha) await gh(`/repos/${SITE_REPO}/contents/${a0.photo}`, { method: "DELETE", body: JSON.stringify({ message: `商品の写真を外す: ${next.name}`, sha: cur.sha }) }).catch(() => {});
+      }
       toast("保存しました。今夜の記事から使われます"); history_.pop(); go(adsView, "広告", false);
     } catch (e) { toast(e.message); $("#saveAd").disabled = false; }
   };
