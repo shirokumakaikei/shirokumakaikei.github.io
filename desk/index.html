@@ -9,6 +9,13 @@
 <script src="vendor/marked.min.js"></script>
 <script src="vendor/purify.min.js"></script>
 <style>
+/* 記事の写真 */
+.phslot { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.phprev { width: 100%; height: auto; border-radius: 6px; border: 1px solid var(--line); }
+.phbtn { display: inline-flex; align-items: center; min-height: 44px; cursor: pointer; border-radius: 8px; padding: 8px 14px;
+  background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.phcheck { margin: 6px 0; padding-left: 1.2em; }
+.chip.warnchip { background: #fff4e5; color: #8a4b00; }
 /* スマホ1列。上から「要対応 → AI社員の稼働 → 方向を決める」。あなたが押すボタンだけオレンジ */
 :root {
   --bg: #f4f7fa; --card: #ffffff; --fg: #172231; --muted: #5a6a7e; --line: #d5dde7;
@@ -287,7 +294,7 @@ async function inbox() {
   const todo = [
     ...pulls.filter((p) => labelOf(p, "channel:") && !has(p, "editor")).map((p) => {
       const ch = labelOf(p, "channel:"), st = labelOf(p, "stage:") || "final";
-      return { kind: st === "ja" ? "editor" : "draft", chip: `${chName(ch)}・${STAGE_LABEL[st] || st}${has(p, "要確認") ? "・要確認" : ""}`,
+      return { kind: st === "ja" ? "editor" : "draft", chip: `${chName(ch)}・${STAGE_LABEL[st] || st}${has(p, "要確認") ? "・要確認" : ""}${has(p, "写真待ち") ? "・写真待ち" : ""}`,
                t: p.title.replace(/^\[[^\]]*\]\s*/, "").replace(/^(日本語版|英語版)[:：]\s*/, ""), m: ago(p.updated_at || p.created_at),
                open: () => go(() => draft(p.number), STAGE_LABEL[st] || "下書き") };
     }),
@@ -400,6 +407,153 @@ function changedLines(before, after) {
   const old = new Set(before.split("\n").map((l) => l.trim()).filter(Boolean));
   return after.split("\n").map((l) => l.trim()).filter((l) => l && !old.has(l));
 }
+// ---------- 記事の写真(本社の docs/photo-requirements.md) ----------
+// 撮影指示(drafts/<媒体>/<slug>.photos.json)の枠ごとに、オーナーが写真をアップロードするか、スキップする。
+// 写真はこの端末で長辺 2048px の JPEG に描き直してから(撮影場所・機種・日時などの EXIF はここで落ちる)、
+// 下書きのブランチの <slug>.photos/incoming/ に置く。本社の Actions(photos.yml)がもう一度メタデータを全部消して WebP にし、incoming は消す。
+const PHOTO_DONE = ["uploaded", "skipped"];
+const PHOTO_STATUS = { pending: "撮影待ち", processing: "処理中(数分かかります)", needs_review: "AI が写り込みを指摘(確認待ち)",
+                       uploaded: "アップロード済み", skipped: "スキップ" };
+const PHOTO_CHECKLIST = [
+  "IP アドレス・ホスト名・ユーザー名・メールアドレスが出ている画面",
+  "Tailscale の画面(マシン名・tailnet 名)",
+  "ルーターの裏などの Wi-Fi パスワードのシール",
+  "シリアル番号や MAC アドレスのラベル",
+  "郵便物・宛名、窓の外の景色、鏡やモニター・ガラスへの映り込み(顔や部屋)",
+  "勤め先や業務委託先に関係するもの(書類・画面・ロゴ)",
+];
+const photoManifestPath = (ch, slug) => `drafts/${ch}/${slug}.photos.json`;
+function loadScript(src) {
+  return new Promise((ok, ng) => {
+    if (document.querySelector(`script[src="${src}"]`)) return ok();
+    const t = document.createElement("script"); t.src = src; t.onload = ok; t.onerror = () => ng(new Error(`${src} を読み込めませんでした`));
+    document.head.appendChild(t);
+  });
+}
+// 写真を JPEG(長辺 2048px)の base64 にする。HEIC は Safari ならそのまま読め、読めないブラウザでは heic2any で変換する
+async function photoJpegB64(file) {
+  const heic = /hei[cf]/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: "from-image" }); }
+  catch {
+    if (!heic) throw new Error("この画像は読み込めませんでした(JPEG・PNG・HEIC を選んでください)");
+    await loadScript("vendor/heic2any.min.js");
+    const out = await window.heic2any({ blob: file, toType: "image/jpeg", quality: 0.92 });
+    bmp = await createImageBitmap(Array.isArray(out) ? out[0] : out, { imageOrientation: "from-image" });
+  }
+  const r = Math.min(1, 2048 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas"); c.width = Math.round(bmp.width * r); c.height = Math.round(bmp.height * r);
+  c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.9).split(",")[1];
+}
+// 撮影指示のファイルを、取り直してから書き換える(本社の Actions と同時に書いたら、取り直して3回まで)
+async function updatePhotos(ctx, fn, msg) {
+  const path = photoManifestPath(ctx.ch, ctx.slug);
+  for (let i = 0; i < 3; i++) {
+    const f = await getFile(path, ctx.ref);
+    const man = JSON.parse(f.text);
+    fn(man);
+    try { await putFile(path, JSON.stringify(man, null, 1) + "\n", f.sha, msg, ctx.ref); return man; }
+    catch (e) { if (!/409|422|sha|match/i.test(e.message) || i === 2) throw e; }
+  }
+}
+async function photoDataUrl(ctx, file) {
+  const j = await gh(`${R}/contents/${file}?ref=${encodeURIComponent(ctx.ref)}`);
+  return `data:image/webp;base64,${j.content.replace(/\n/g, "")}`;
+}
+function renderPhotos(el, ctx) {
+  const slots = ctx.man.slots;
+  const wait = slots.filter((x) => !PHOTO_DONE.includes(x.status));
+  const done = slots.filter((x) => x.status === "uploaded");
+  el.innerHTML = `<div class="card pad stack">
+    <div class="row" style="justify-content:space-between"><b>写真(${slots.length - wait.length}/${slots.length} 済み)</b>
+      <button class="sub" id="phReload">更新</button></div>
+    ${wait.length ? `<div class="warn">全部の枠が「アップロード済み」か「スキップ」になるまで、公開できません。写真が要らなければ枠ごとにスキップしてください。</div>` : ""}
+    <details ${wait.length ? "open" : ""}><summary><b>撮る前に: 写り込みのチェック</b>(スクリーンショットも同じ)</summary>
+      <ul class="phcheck">${PHOTO_CHECKLIST.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
+      <p class="meta">写ってしまうものは、向きを変える・隠す・トリミングしてから撮り直してください。撮影場所・機種・日時などの情報は自動で消えます。</p></details>
+    ${ctx.closed ? "" : `<label class="row" style="gap:8px"><input type="checkbox" id="phOk">上のチェックリストを確認した(アップロードに必要)</label>`}
+    ${slots.map((x) => `<div class="phslot" data-id="${esc(x.id)}">
+      <div class="row" style="justify-content:space-between"><b>${esc(x.id)} ${x.kind === "screenshot" ? "スクリーンショット" : "写真"}</b>
+        <span class="chip ${x.status === "uploaded" ? "ok" : x.status === "skipped" ? "idle" : "warnchip"}">${esc(PHOTO_STATUS[x.status] || x.status)}</span></div>
+      <div>${esc(x.instruction)}</div>
+      ${x.error ? `<div class="warn">${esc(x.error)}</div>` : ""}
+      ${x.file && x.status !== "skipped" ? `<img class="phprev" data-file="${esc(x.file)}" alt="${esc(x.alt)}">` : ""}
+      ${x.ai_check?.findings?.length ? `<div class="warn"><b>AI が気にした点</b>(公開してよいかはあなたが判断)<ul>${x.ai_check.findings.map((f) => `<li>${esc([f.what, f.where, f.why].filter(Boolean).join(" ・ "))}</li>`).join("")}</ul></div>` : ""}
+      ${x.ai_check?.status === "skipped" && x.status !== "skipped" ? `<div class="meta">${esc(x.ai_check.note || "AI の確認はしていません。写り込みは目で確かめてください")}</div>` : ""}
+      ${ctx.closed ? "" : `
+      <label>説明(alt。読み上げ用。写っているものをそのまま)<input type="text" class="phalt" value="${esc(x.alt || "")}" maxlength="120"></label>
+      <div class="row" style="flex-wrap:wrap;gap:8px">
+        <label class="sub phbtn">カメラで撮る<input type="file" class="phcam" accept="image/*" capture="environment" hidden></label>
+        <label class="sub phbtn">写真を選ぶ<input type="file" class="phlib" accept="image/*,.heic,.heif" hidden></label>
+        ${x.status === "skipped" ? `<button class="sub phunskip">スキップを取り消す</button>` : `<button class="sub phskip">この枠はスキップ</button>`}
+        ${x.status === "needs_review" ? `<button class="act phack">確認した。このまま使う</button>` : ""}
+        <button class="sub phalt-save">説明を保存</button>
+      </div>`}
+    </div>`).join("")}
+    ${done.length ? `<div class="row"><button class="sub" id="phZip">写真をまとめてダウンロード(${done.length}枚)</button>
+      <span class="meta">${ctx.isSite ? "公開するとサイトに自動で入ります。" : "note・Substack には、本文の「【写真 p1 をここに貼る】」の位置に手で貼ってください。"}</span></div>` : ""}
+  </div>`;
+  el.querySelectorAll(".phprev").forEach(async (img) => { try { img.src = await photoDataUrl(ctx, img.dataset.file); } catch {} });
+  const again = () => go(() => draft(ctx.n), current?.title || "下書き", false);
+  $("#phReload").onclick = again;
+  const busy = (b, on) => { if (b) b.disabled = on; };
+  el.querySelectorAll(".phslot").forEach((box) => {
+    const id = box.dataset.id;
+    const upload = async (input) => {
+      const f = input.files[0]; if (!f) return;
+      if (!$("#phOk")?.checked) { input.value = ""; return toast("先に「チェックリストを確認した」にチェックを入れてください"); }
+      toast("写真を準備しています…");
+      try {
+        const b64 = await photoJpegB64(f);
+        const alt = box.querySelector(".phalt").value.trim();
+        await updatePhotos(ctx, (m) => { const x = m.slots.find((y) => y.id === id); x.status = "processing"; x.error = null; x.alt = alt || x.alt; x.updated = new Date().toISOString(); },
+          `写真をアップロード: ${id}`);
+        const path = `drafts/${ctx.ch}/${ctx.slug}.photos/incoming/${id}.jpg`;
+        const cur = await gh(`${R}/contents/${path}?ref=${encodeURIComponent(ctx.ref)}`).catch(() => null);
+        await gh(`${R}/contents/${path}`, { method: "PUT", body: JSON.stringify({ message: `写真を置く: ${id}(このあとメタデータを消して WebP に)`,
+          content: b64, branch: ctx.ref, ...(cur?.sha ? { sha: cur.sha } : {}) }) });
+        toast("アップロードしました。数分で処理されます(「更新」で確認)"); again();
+      } catch (e) { toast(e.message); input.value = ""; }
+    };
+    box.querySelectorAll(".phcam, .phlib").forEach((inp) => { inp.onchange = () => upload(inp); });
+    const setStatus = (btn, st, msg) => async () => {
+      busy(btn, true);
+      try { await updatePhotos(ctx, (m) => { const x = m.slots.find((y) => y.id === id); x.status = st; x.updated = new Date().toISOString(); }, msg); again(); }
+      catch (e) { toast(e.message); busy(btn, false); }
+    };
+    const sk = box.querySelector(".phskip"); if (sk) sk.onclick = setStatus(sk, "skipped", `写真の枠をスキップ: ${id}`);
+    const us = box.querySelector(".phunskip"); if (us) us.onclick = setStatus(us, "pending", `写真の枠のスキップを取り消す: ${id}`);
+    const ack = box.querySelector(".phack"); if (ack) ack.onclick = setStatus(ack, "uploaded", `写真の写り込みを確認した: ${id}`);
+    const sv = box.querySelector(".phalt-save");
+    if (sv) sv.onclick = async () => {
+      const alt = box.querySelector(".phalt").value.trim();
+      if (!alt) return toast("説明を入れてください");
+      if (/[—―]/.test(alt)) return toast("エムダッシュは使えません");
+      busy(sv, true);
+      try { await updatePhotos(ctx, (m) => { m.slots.find((y) => y.id === id).alt = alt; }, `写真の説明を直す: ${id}`); toast("説明を保存しました"); busy(sv, false); }
+      catch (e) { toast(e.message); busy(sv, false); }
+    };
+  });
+  const zip = $("#phZip");
+  if (zip) zip.onclick = async () => {
+    zip.disabled = true;
+    try {
+      await loadScript("vendor/jszip.min.js");
+      const z = new window.JSZip();
+      for (const x of done) {
+        const j = await gh(`${R}/contents/${x.file}?ref=${encodeURIComponent(ctx.ref)}`);
+        z.file(`${ctx.slug}-${x.id}.webp`, j.content.replace(/\n/g, ""), { base64: true });
+      }
+      z.file("説明.txt", done.map((x) => `${x.id}: ${x.alt}`).join("\n") + "\n");
+      const blob = await z.generateAsync({ type: "blob" });
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${ctx.slug}-photos.zip`; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+    } catch (e) { toast(e.message); }
+    zip.disabled = false;
+  };
+}
+
 async function draftCtx(n) {
   const [pr, files] = await Promise.all([gh(`${R}/pulls/${n}`), gh(`${R}/pulls/${n}/files?per_page=50`)]);
   const ch = labelOf(pr, "channel:") || "site", st = labelOf(pr, "stage:") || "final", slug = pr.head.ref.split("/").pop();
@@ -629,9 +783,12 @@ async function draft(n) {
   let adTypes = {};
   try { if (ch === "site") adTypes = Object.fromEntries(parseAds((await getFile(ADS_PATH, "", SITE_REPO)).text).ads.map((a) => [a.id, a.type])); } catch {}
   const thumbPath = pick(/\.thumb\.png$/) || "";
-  const [file, htmlFile, factFile, thumbFile] = await Promise.all([getFile(mdPath, pr.head.ref), htmlPath ? getFile(htmlPath, pr.head.ref).catch(() => null) : null,
+  const [file, htmlFile, factFile, thumbFile, photoFile] = await Promise.all([getFile(mdPath, pr.head.ref), htmlPath ? getFile(htmlPath, pr.head.ref).catch(() => null) : null,
     getFile(`facts/${ch}/${slug}.json`, pr.head.ref).catch(() => null),
-    thumbPath ? gh(`${R}/contents/${thumbPath}?ref=${encodeURIComponent(pr.head.ref)}`).catch(() => null) : null]);
+    thumbPath ? gh(`${R}/contents/${thumbPath}?ref=${encodeURIComponent(pr.head.ref)}`).catch(() => null) : null,
+    getFile(photoManifestPath(ch, slug), pr.head.ref).catch(() => null)]);
+  let photoMan = null; try { photoMan = photoFile ? JSON.parse(photoFile.text) : null; } catch {}
+  const photoWait = photoMan ? photoMan.slots.filter((x) => !PHOTO_DONE.includes(x.status)).length : 0;
   const thumbSrc = thumbFile?.content ? `data:image/png;base64,${thumbFile.content.replace(/\n/g, "")}` : "";
   let facts = null; try { facts = factFile ? JSON.parse(factFile.text) : null; } catch {}
   const { meta, body } = splitFront(file.text);
@@ -643,6 +800,7 @@ async function draft(n) {
   const size = st === "en" ? `${words}語` : `${body.replace(/\s/g, "").length}字`;
   let primary = "";
   if (st === "ja") primary = `<button class="act" id="pub">日本語版OK → 英訳へ</button>`;
+  else if (photoWait) primary = `<button class="act" id="pub" disabled>写真待ち(${photoWait}枚)</button>`;
   else if (isSite) primary = `<button class="act" id="pub">公開する</button>`;
   else if (outbox) primary = `<button class="act" id="pub">承認する(note 登録待ちへ)</button>`;
   else primary = `<button class="act" id="pub">投稿済みにする</button>`;
@@ -653,6 +811,7 @@ async function draft(n) {
     ${facts && facts.claims.some((c) => c.verdict === "wrong") ? '<div class="warn">ファクトチェックで<b>誤り</b>が残っています(要確認)。下の表で出典と照らしてください。</div>' : ""}
     ${lastCheck[n] ? checkPanel(lastCheck[n]) : ""}
     <div id="prcheck"></div>
+    ${photoMan && photoMan.slots.length ? '<div id="photos"></div>' : ""}
     <div class="row" style="justify-content:space-between"><div class="meta">${esc(chName(ch))} ・ ${esc(STAGE_LABEL[st] || st)} ・ ${esc(meta.date || "")} ・ ${size}${pr.labels.some((l) => l.name === HUMAN_LABEL) ? " ・ 人が手直し済み" : ""}</div>
       ${closed || !canSelfEdit(ch, st) ? "" : '<button class="sub" id="edit">自分で直す</button>'}</div>
     ${thumbSrc ? `<div class="card pad stack"><div class="meta">${isSite ? "SNS で共有したときの画像(OGP)" : "見出し画像(サムネ)"}${meta.thumb_title ? ` ・ 「${esc(String(meta.thumb_title).replace(/\\n|\n/g, " / "))}」` : ""}</div>
@@ -700,12 +859,13 @@ async function draft(n) {
   if (closed) return;
   const ed = $("#edit");
   if (ed) ed.onclick = () => go(() => editBody(n), "自分で直す");
+  if (photoMan && photoMan.slots.length) renderPhotos($("#photos"), { n, ch, slug, ref: pr.head.ref, man: photoMan, closed, isSite });
   if (st === "ja") {
     twoTap($("#pub"), "英訳を始める", async () => {
       await gh(`${R}/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body: "/approve-ja\n\n(デスクから承認)" }) });
       toast("英訳を頼みました。数分後に英語版が届きます"); home();
     });
-  } else {
+  } else if (!photoWait) {
     twoTap($("#pub"), isSite ? "本当に公開する" : outbox ? "本当に承認する" : "投稿済みにする", async () => {
       await gh(`${R}/pulls/${n}/merge`, { method: "PUT", body: JSON.stringify({ merge_method: "squash" }) });
       toast(isSite ? "公開しました。数分でサイトに反映されます" : outbox ? "承認しました。PC の下書き登録で note に入ります" : "投稿済みにしました"); home();
