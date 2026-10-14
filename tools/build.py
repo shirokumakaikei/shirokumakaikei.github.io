@@ -46,6 +46,11 @@ SHOP_HOSTS = {
     "rakuten_url": ("楽天", ("hb.afl.rakuten.co.jp", "a.r10.to", "r10.to")),
 }
 SHOP_LINK_REL = "nofollow sponsored noopener"
+# 記事の写真(本社の docs/photo-requirements.md)。本文の目印 [[photo:p1]] を、assets/photos/<articles|lab>/<slug>/p1.webp の figure にする。
+# alt と大きさは front matter の photos(本社の publish が書く)。画像はメタデータを消した WebP だけ
+PHOTO_RE = re.compile(r"^\[\[photo:(p\d+)\]\]\s*$", re.M)
+PHOTO_MAX_BYTES = 400_000
+WEBP_OK_CHUNKS = {b"VP8 ", b"VP8L", b"VP8X", b"ALPH", b"ANIM", b"ANMF"}
 
 AUTHOR_NOTE = (
     "税理士法人で約3年半、法人・個人の顧問を担当したあと、不動産業の事業会社で経理を担当しています。"
@@ -257,11 +262,71 @@ def expand_ads(body_md: str) -> tuple[str, bool]:
     return AD_RE.sub(rep, body_md), used
 
 
+def webp_meta_err(data: bytes) -> str:
+    """WebP にメタデータ(EXIF・XMP・ICC)が入っていないか。入っていれば理由を返す。"""
+    import struct
+    if data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+        return "WebP ではない"
+    i = 12
+    while i + 8 <= len(data):
+        tag, size = data[i:i + 4], struct.unpack("<I", data[i + 4:i + 8])[0]
+        if tag not in WEBP_OK_CHUNKS:
+            return f"メタデータらしきチャンク {tag!r} がある"
+        if tag == b"VP8X" and data[i + 8] & 0x2C:
+            return "ICC・EXIF・XMP のフラグが立っている"
+        i += 8 + size + (size & 1)
+    return ""
+
+
+def photo_errs(a: dict, section: str) -> list[str]:
+    """本文の写真の目印と、front matter の photos、画像ファイルが合っているか。"""
+    errs = []
+    name = a["slug"]
+    ph = a.get("photos") or {}
+    if ph and not isinstance(ph, dict):
+        return [f"{name}: photos は p1: {{alt: ..., width: ..., height: ...}} の形"]
+    found = PHOTO_RE.findall(a.get("body_md", ""))
+    for pid in found:
+        e = ph.get(pid)
+        if not isinstance(e, dict) or not str(e.get("alt") or "").strip():
+            errs.append(f"{name}: 写真 {pid} の alt が front matter の photos に無い")
+            continue
+        if not all(isinstance(e.get(k), int) and e[k] > 0 for k in ("width", "height")):
+            errs.append(f"{name}: 写真 {pid} の width・height が無い")
+        f = ROOT / "assets" / "photos" / section / name / f"{pid}.webp"
+        if not f.exists():
+            errs.append(f"{name}: 写真 {pid} の画像 {f.relative_to(ROOT)} が無い")
+            continue
+        data = f.read_bytes()
+        if len(data) > PHOTO_MAX_BYTES:
+            errs.append(f"{name}: 写真 {pid} が {len(data):,} バイト。{PHOTO_MAX_BYTES:,} バイトまで")
+        if (why := webp_meta_err(data)):
+            errs.append(f"{name}: 写真 {pid}: {why}(メタデータを消した WebP だけを置く)")
+    for pid in ph:
+        if pid not in found:
+            errs.append(f"{name}: front matter の写真 {pid} の目印 [[photo:{pid}]] が本文に無い")
+    return errs
+
+
+def expand_photos(body_md: str, a: dict, section: str, prefix: str = "../") -> str:
+    """目印 [[photo:p1]] を figure(img に alt・幅・高さ・遅延読み込み)にする。"""
+    ph = a.get("photos") or {}
+
+    def rep(m: re.Match) -> str:
+        e = ph.get(m.group(1)) or {}
+        src = f"{prefix}assets/photos/{section}/{a['slug']}/{m.group(1)}.webp"
+        alt = esc(str(e.get("alt", "")))
+        return (f'<figure class="article-photo"><img src="{src}" alt="{alt}" width="{int(e.get("width") or 0)}" '
+                f'height="{int(e.get("height") or 0)}" loading="lazy" decoding="async"></figure>')
+    return PHOTO_RE.sub(rep, body_md)
+
+
 def secret_errs(a: dict) -> list[str]:
     """IP アドレス・トークン・メールアドレスらしき文字列(tools/secret_scan.py)。記事には載せない。"""
     import secret_scan
     text = "\n".join(str(a.get(k, "")) for k in ["title", "description", "summary", "worked_on", "body_md"]) \
-        + "\n" + "\n".join(map(str, a.get("environment") or []))
+        + "\n" + "\n".join(map(str, a.get("environment") or [])) \
+        + "\n" + "\n".join(str((v or {}).get("alt", "")) for v in (a.get("photos") or {}).values() if isinstance(v, dict))
     return [f"{a['slug']}: {kind}「{secret_scan.mask(hit)}」を載せない" for _, kind, hit in secret_scan.scan_text(text)]
 
 
@@ -303,6 +368,7 @@ def validate(a: dict) -> list[str]:
     if not (3 <= h2 <= 7):
         errs.append(f"{name}: 見出し(##)が{h2}個。4〜6個にする")
     errs += secret_errs(a)
+    errs += photo_errs(a, "articles")
     return errs
 
 
@@ -342,7 +408,7 @@ def validate_lab(a: dict) -> list[str]:
     h2 = body.count("\n## ") + body.startswith("## ")
     if not (3 <= h2 <= 8):
         errs.append(f"lab/{name}: 見出し(##)が{h2}個。4〜7個にする")
-    errs += [e.replace(f"{name}: ", f"lab/{name}: ", 1) for e in secret_errs(a)]
+    errs += [e.replace(f"{name}: ", f"lab/{name}: ", 1) for e in secret_errs(a) + photo_errs(a, "lab")]
     return errs
 
 
@@ -400,7 +466,7 @@ def list_titles(exclude: str = "", section: str = "articles") -> list[tuple[str,
 # ---------- レンダリング ----------
 
 def render_article(a: dict, all_slugs: set[str]) -> str:
-    body_md, has_ad = expand_ads(a["body_md"])
+    body_md, has_ad = expand_ads(expand_photos(a["body_md"], a, "articles"))
     amazon = uses_amazon(a["body_md"])
     body = markdown.markdown(body_md, extensions=["tables", "sane_lists"])
     for target in re.findall(r'href="([a-z0-9-]+)\.html"', body):
@@ -514,7 +580,7 @@ def lab_head(title: str, desc: str, url: str, og_type: str = "article") -> str:
 
 
 def render_lab_article(a: dict, lab_slugs: set[str], article_slugs: set[str]) -> str:
-    body = markdown.markdown(a["body_md"], extensions=["tables", "sane_lists", "fenced_code"])
+    body = markdown.markdown(expand_photos(a["body_md"], a, "lab"), extensions=["tables", "sane_lists", "fenced_code"])
     for target in re.findall(r'href="([a-z0-9-]+)\.html"', body):
         if target not in lab_slugs and target != "index":
             raise BuildError(f"lab/{a['slug']}: 内部リンク先 {target}.html がしろくまラボにありません")

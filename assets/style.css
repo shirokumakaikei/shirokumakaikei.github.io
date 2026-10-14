@@ -343,3 +343,7 @@ a:focus-visible {
 .lab-meta { font-size: 0.85em; color: #666; }
 main pre { overflow-x: auto; padding: 12px; background: #f5f6f8; border-radius: 6px; font-size: 0.9em; }
 main code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* 記事の写真(筆者が撮影。メタデータを消した WebP) */
+.article-photo { margin: 24px 0; }
+.article-photo img { display: block; width: 100%; max-width: 720px; height: auto; border-radius: 6px; border: 1px solid var(--rule); }
