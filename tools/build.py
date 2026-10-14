@@ -50,6 +50,8 @@ SHOP_LINK_REL = "nofollow sponsored noopener"
 # alt と大きさは front matter の photos(本社の publish が書く)。画像はメタデータを消した WebP だけ
 PHOTO_RE = re.compile(r"^\[\[photo:(p\d+)\]\]\s*$", re.M)
 PHOTO_MAX_BYTES = 400_000
+# 写真ライブラリ(本社の tools/photo_library.py)で使い回した写真は、公開済みの画像をそのまま指す(front matter の photos の src)
+PHOTO_SRC_RE = re.compile(r"^assets/photos/(?:articles|lab)/[a-z0-9-]+/p\d+\.webp$")
 WEBP_OK_CHUNKS = {b"VP8 ", b"VP8L", b"VP8X", b"ALPH", b"ANIM", b"ANMF"}
 
 AUTHOR_NOTE = (
@@ -293,7 +295,10 @@ def photo_errs(a: dict, section: str) -> list[str]:
             continue
         if not all(isinstance(e.get(k), int) and e[k] > 0 for k in ("width", "height")):
             errs.append(f"{name}: 写真 {pid} の width・height が無い")
-        f = ROOT / "assets" / "photos" / section / name / f"{pid}.webp"
+        if e.get("src") and not PHOTO_SRC_RE.match(str(e["src"])):
+            errs.append(f"{name}: 写真 {pid} の src は assets/photos/<articles|lab>/<slug>/<pN>.webp の形")
+            continue
+        f = ROOT / (str(e["src"]) if e.get("src") else f"assets/photos/{section}/{name}/{pid}.webp")
         if not f.exists():
             errs.append(f"{name}: 写真 {pid} の画像 {f.relative_to(ROOT)} が無い")
             continue
@@ -314,7 +319,8 @@ def expand_photos(body_md: str, a: dict, section: str, prefix: str = "../") -> s
 
     def rep(m: re.Match) -> str:
         e = ph.get(m.group(1)) or {}
-        src = f"{prefix}assets/photos/{section}/{a['slug']}/{m.group(1)}.webp"
+        src = prefix + (str(e["src"]) if e.get("src") and PHOTO_SRC_RE.match(str(e["src"]))
+                        else f"assets/photos/{section}/{a['slug']}/{m.group(1)}.webp")
         alt = esc(str(e.get("alt", "")))
         return (f'<figure class="article-photo"><img src="{src}" alt="{alt}" width="{int(e.get("width") or 0)}" '
                 f'height="{int(e.get("height") or 0)}" loading="lazy" decoding="async"></figure>')

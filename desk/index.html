@@ -11,6 +11,12 @@
 <style>
 /* 記事の写真 */
 .phslot { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.libgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.libcard { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--card, #fff); display: flex; flex-direction: column; text-align: left; padding: 0; font: inherit; color: inherit; }
+.libcard img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #eef2f6; display: block; }
+.libcard .lb { padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; font-size: 0.82rem; line-height: 1.4; }
+.libcard .lb .chip { align-self: flex-start; }
+.libtags { display: flex; flex-wrap: wrap; gap: 4px; }
 .phprev { width: 100%; height: auto; border-radius: 6px; border: 1px solid var(--line); }
 .phbtn { display: inline-flex; align-items: center; min-height: 44px; cursor: pointer; border-radius: 8px; padding: 8px 14px;
   background: var(--accent-soft); color: var(--accent); font-weight: 700; }
@@ -332,6 +338,7 @@ async function inbox() {
     <button class="item" id="ytch"><div class="main"><div class="t">参考チャンネル</div><div class="m">編集長が週1で見る YouTube チャンネルの追加・削除・ジャンル分け</div></div>›</button>
     <button class="item" id="addExp"><div class="main"><div class="t">体験を追加する</div><div class="m">全媒体で使える実体験を足す</div></div>›</button>
     <button class="item" id="addPractice"><div class="main"><div class="t">実務メモを足す</div><div class="m">法令の原則とは別の、実務の慣行(しろくま会計・note で使う)</div></div>›</button>
+    <button class="item" id="photoLib"><div class="main"><div class="t">写真ライブラリ</div><div class="m">アップした写真の一覧。別の記事でも使い回す・記事なしで先にアップ</div></div>›</button>
     <button class="item" id="ads"><div class="main"><div class="t">広告を管理する</div><div class="m">アフィリエイトの追加・停止・削除(しろくま会計)</div></div>›</button>
   </div>
   <p class="meta" style="margin-top:20px"><a href="${SITE}/" target="_blank" rel="noopener">しろくま会計を開く</a> ・ <a href="https://github.com/${OFFICE}" target="_blank" rel="noopener">本社(GitHub)</a></p>`;
@@ -355,6 +362,7 @@ async function inbox() {
   $("#addPractice").onclick = () => go(addPractice, "実務メモを足す");
   $("#ytch").onclick = () => go(ytChannelsView, "参考チャンネル");
   $("#ads").onclick = () => go(adsView, "広告");
+  $("#photoLib").onclick = () => go(libraryView, "写真ライブラリ");
 }
 
 // ---------- 下書き ----------
@@ -457,8 +465,10 @@ async function updatePhotos(ctx, fn, msg) {
     catch (e) { if (!/409|422|sha|match/i.test(e.message) || i === 2) throw e; }
   }
 }
+// ライブラリから選んだ写真(library/photos/...)は main にある。それ以外は下書きのブランチ
+const photoRef = (ctx, file) => (String(file).startsWith("library/") ? "main" : ctx.ref);
 async function photoDataUrl(ctx, file) {
-  const j = await gh(`${R}/contents/${file}?ref=${encodeURIComponent(ctx.ref)}`);
+  const j = await gh(`${R}/contents/${file}?ref=${encodeURIComponent(photoRef(ctx, file))}`);
   return `data:image/webp;base64,${j.content.replace(/\n/g, "")}`;
 }
 function renderPhotos(el, ctx) {
@@ -477,6 +487,9 @@ function renderPhotos(el, ctx) {
       <div class="row" style="justify-content:space-between"><b>${esc(x.id)} ${x.kind === "screenshot" ? "スクリーンショット" : "写真"}</b>
         <span class="chip ${x.status === "uploaded" ? "ok" : x.status === "skipped" ? "idle" : "warnchip"}">${esc(PHOTO_STATUS[x.status] || x.status)}</span></div>
       <div>${esc(x.instruction)}</div>
+      ${x.from_library && x.status === "uploaded" ? `<div class="meta">写真ライブラリの写真(${esc(x.library_id || "")})を使っています</div>` : ""}
+      ${x.candidates?.length && x.status === "pending" ? `<div class="meta">📚 ライブラリに候補が ${x.candidates.length} 枚あります。「ライブラリから選ぶ」で使えます</div>` : ""}
+      <div class="phpicker" hidden></div>
       ${x.error ? `<div class="warn">${esc(x.error)}</div>` : ""}
       ${x.file && x.status !== "skipped" ? `<img class="phprev" data-file="${esc(x.file)}" alt="${esc(x.alt)}">` : ""}
       ${x.ai_check?.findings?.length ? `<div class="warn"><b>AI が気にした点</b>(公開してよいかはあなたが判断)<ul>${x.ai_check.findings.map((f) => `<li>${esc([f.what, f.where, f.why].filter(Boolean).join(" ・ "))}</li>`).join("")}</ul></div>` : ""}
@@ -486,6 +499,8 @@ function renderPhotos(el, ctx) {
       <div class="row" style="flex-wrap:wrap;gap:8px">
         <label class="sub phbtn">カメラで撮る<input type="file" class="phcam" accept="image/*" capture="environment" hidden></label>
         <label class="sub phbtn">写真を選ぶ<input type="file" class="phlib" accept="image/*,.heic,.heif" hidden></label>
+        <button class="sub phpick">ライブラリから選ぶ${x.candidates?.length ? `(候補 ${x.candidates.length})` : ""}</button>
+        ${x.from_library && x.status === "uploaded" ? `<button class="sub phunpick">選んだ写真を外す</button>` : ""}
         ${x.status === "skipped" ? `<button class="sub phunskip">スキップを取り消す</button>` : `<button class="sub phskip">この枠はスキップ</button>`}
         ${x.status === "needs_review" ? `<button class="act phack">確認した。このまま使う</button>` : ""}
         <button class="sub phalt-save">説明を保存</button>
@@ -524,7 +539,34 @@ function renderPhotos(el, ctx) {
     };
     const sk = box.querySelector(".phskip"); if (sk) sk.onclick = setStatus(sk, "skipped", `写真の枠をスキップ: ${id}`);
     const us = box.querySelector(".phunskip"); if (us) us.onclick = setStatus(us, "pending", `写真の枠のスキップを取り消す: ${id}`);
-    const ack = box.querySelector(".phack"); if (ack) ack.onclick = setStatus(ack, "uploaded", `写真の写り込みを確認した: ${id}`);
+    const ack = box.querySelector(".phack");
+    if (ack) ack.onclick = async () => {  // 写真ライブラリの台帳でも「確認済み」にする(候補に出せるように)
+      await setStatus(ack, "uploaded", `写真の写り込みを確認した: ${id}`)();
+      const lid = slots.find((y) => y.id === id)?.library_id;
+      if (lid) libUpdate((d) => { const e = d.photos.find((y) => y.id === lid); if (e) { e.checked = true; e.check = { ...(e.check || {}), by: "owner", at: new Date().toISOString() }; } },
+        `写真ライブラリ: 写り込みを確認した ${lid}`).catch(() => {});
+    };
+    const pick = box.querySelector(".phpick");
+    if (pick) pick.onclick = () => libPicker(box.querySelector(".phpicker"), slots.find((y) => y.id === id), async (e) => {
+      const alt = box.querySelector(".phalt").value.trim();
+      await updatePhotos(ctx, (m) => {
+        const x = m.slots.find((y) => y.id === id);
+        Object.assign(x, { status: "uploaded", file: e.file, library_id: e.id, from_library: true, width: e.width, height: e.height, bytes: e.bytes,
+          alt: alt || e.alt || x.alt, error: null, ai_check: { status: "ok", findings: [], note: "写真ライブラリの写真(写り込みチェック済み)", at: new Date().toISOString() },
+          updated: new Date().toISOString() });
+      }, `写真ライブラリから選ぶ: ${id} ← ${e.id}`);
+      toast("ライブラリの写真を入れました"); again();
+    });
+    const unpick = box.querySelector(".phunpick");
+    if (unpick) unpick.onclick = async () => {
+      busy(unpick, true);
+      try {
+        await updatePhotos(ctx, (m) => { const x = m.slots.find((y) => y.id === id);
+          Object.assign(x, { status: "pending", file: null, library_id: null, from_library: false, width: null, height: null, bytes: null, ai_check: null, updated: new Date().toISOString() }); },
+          `写真ライブラリの写真を外す: ${id}`);
+        again();
+      } catch (e) { toast(e.message); busy(unpick, false); }
+    };
     const sv = box.querySelector(".phalt-save");
     if (sv) sv.onclick = async () => {
       const alt = box.querySelector(".phalt").value.trim();
@@ -542,7 +584,7 @@ function renderPhotos(el, ctx) {
       await loadScript("vendor/jszip.min.js");
       const z = new window.JSZip();
       for (const x of done) {
-        const j = await gh(`${R}/contents/${x.file}?ref=${encodeURIComponent(ctx.ref)}`);
+        const j = await gh(`${R}/contents/${x.file}?ref=${encodeURIComponent(photoRef(ctx, x.file))}`);
         z.file(`${ctx.slug}-${x.id}.webp`, j.content.replace(/\n/g, ""), { base64: true });
       }
       z.file("説明.txt", done.map((x) => `${x.id}: ${x.alt}`).join("\n") + "\n");
@@ -554,6 +596,185 @@ function renderPhotos(el, ctx) {
   };
 }
 
+// ---------- 写真ライブラリ(本社の shared/photo-library.json と library/。非公開) ----------
+// 加工済み(メタデータ無し)の写真だけを置く。写り込みチェックが済んでいない写真と古い印の写真は、記事の候補に出さない
+const LIB_PATH = "shared/photo-library.json";
+const libUsable = (e) => e.checked && !e.stale;
+const libThumbs = {};
+async function libLoad() {
+  try { return JSON.parse((await getFile(LIB_PATH)).text); }
+  catch (e) { if (/404/.test(e.message)) return { version: 1, photos: [] }; throw e; }
+}
+async function libUpdate(fn, msg) {
+  for (let i = 0; i < 3; i++) {
+    const f = await getFile(LIB_PATH);
+    const d = JSON.parse(f.text);
+    fn(d);
+    try { await putFile(LIB_PATH, JSON.stringify(d, null, 1) + "\n", f.sha, msg); return d; }
+    catch (e) { if (!/409|422|sha|match/i.test(e.message) || i === 2) throw e; }
+  }
+}
+async function libImg(path) {
+  if (!libThumbs[path]) libThumbs[path] = gh(`${R}/contents/${path}?ref=main`).then((j) => `data:image/webp;base64,${j.content.replace(/\n/g, "")}`);
+  return libThumbs[path];
+}
+const libText = (e) => `${e.description || ""} ${e.alt || ""} ${(e.tags || []).join(" ")}`.toLowerCase();
+const libArticles = (e) => [...new Set((e.used_in || []).map((u) => `${chName(u.channel)} ${u.slug}`))];
+function libWarn(e) {  // 本社の photo_library.delete_warning と同じ文
+  const arts = [...new Set((e.used_in || []).map((u) => `${u.channel}/${u.slug}`))].sort();
+  return arts.length ? `この写真は ${arts.length} 本の記事で使っています(${arts.join(", ")})。ライブラリから消しても、公開済みの画像は消えません。これから書く記事の候補に出なくなります` : "";
+}
+function libCard(e) {
+  return `<button class="libcard" data-lib="${esc(e.id)}"><img data-thumb="${esc(e.thumb || "")}" alt="${esc(e.alt || "")}">
+    <div class="lb">${!e.checked ? '<span class="chip warnchip">写り込み未確認</span>' : ""}${e.stale ? '<span class="chip idle">古い</span>' : ""}
+      <div>${esc((e.description || "(説明なし)").slice(0, 60))}</div>
+      <div class="libtags">${(e.tags || []).slice(0, 4).map((t) => `<span class="chip idle">${esc(t)}</span>`).join("")}</div>
+      <div class="meta">${esc(e.taken || "")}${(e.used_in || []).length ? ` ・ ${libArticles(e).length}本で使用` : " ・ 未使用"}</div></div></button>`;
+}
+function libFillThumbs(el) { el.querySelectorAll("img[data-thumb]").forEach(async (img) => { try { if (img.dataset.thumb) img.src = await libImg(img.dataset.thumb); } catch {} }); }
+async function libraryView() {
+  const d = await libLoad();
+  const list = [...d.photos].reverse();
+  view.innerHTML = `<div class="stack" style="margin-top:16px">
+    <p class="meta">アップした写真(メタデータを消した WebP)をためて、別の記事でも使います。非公開で、記事で使ったときだけ公開サイトに出ます。</p>
+    <div class="row" style="flex-wrap:wrap;gap:8px"><button class="act" id="libAdd">写真を追加する(記事なしで)</button></div>
+    <input type="search" id="libQ" placeholder="説明・タグで探す(例: ラズパイ)">
+    <label class="row" style="gap:8px"><input type="checkbox" id="libOld" style="width:auto">古い印の写真も出す</label>
+    <div class="meta" id="libCount"></div>
+    <div class="libgrid" id="libGrid"></div></div>`;
+  const draw = () => {
+    const q = $("#libQ").value.trim().toLowerCase(), old = $("#libOld").checked;
+    const hit = list.filter((e) => (old || !e.stale) && (!q || q.split(/\s+/).every((w) => libText(e).includes(w))));
+    $("#libCount").textContent = `${hit.length}枚(全${list.length}枚)`;
+    $("#libGrid").innerHTML = hit.map(libCard).join("") || '<p class="empty">写真はまだありません。</p>';
+    libFillThumbs($("#libGrid"));
+    $("#libGrid").querySelectorAll("[data-lib]").forEach((b) => { b.onclick = () => go(() => libraryEdit(b.dataset.lib), "写真を直す"); });
+  };
+  $("#libQ").oninput = draw; $("#libOld").onchange = draw; draw();
+  $("#libAdd").onclick = () => go(libraryUpload, "写真を追加");
+}
+async function libraryEdit(id) {
+  const d = await libLoad();
+  const e = d.photos.find((x) => x.id === id);
+  if (!e) throw new Error("その写真が見つかりませんでした(削除された可能性があります)");
+  const findings = e.check?.findings || [];
+  view.innerHTML = `<div class="card pad stack" style="margin-top:16px">
+    <img id="libFull" alt="${esc(e.alt || "")}" style="width:100%;height:auto;border-radius:6px;border:1px solid var(--line)">
+    <div class="meta">${esc(e.id)} ・ ${e.kind === "screenshot" ? "スクリーンショット" : "写真"} ・ ${e.width}×${e.height} ・ ${Math.round((e.bytes || 0) / 1024)}KB</div>
+    ${!e.checked ? `<div class="warn stack"><b>写り込みが未確認です</b>(確認するまで記事の候補にも公開にも出ません)
+      ${findings.length ? `<ul>${findings.map((f) => `<li>${esc([f.what, f.where, f.why].filter(Boolean).join(" ・ "))}</li>`).join("")}</ul>` : `<div class="meta">${esc(e.check?.note || "AI の確認ができていません。写真を目で確かめてください")}</div>`}
+      <button class="sub" id="libAck">写り込みを確認した(使ってよい)</button></div>` : ""}
+    <label>説明(何が写っているか。候補を探すときに使う)<textarea id="libDesc" rows="3">${esc(e.description || "")}</textarea></label>
+    <label>タグ(機材名・画面名・テーマ。「、」かカンマで区切る)<input type="text" id="libTags" value="${esc((e.tags || []).join("、"))}"></label>
+    <label>alt(読み上げ用の説明)<input type="text" id="libAlt" maxlength="120" value="${esc(e.alt || "")}"></label>
+    <label>撮影時期<input type="month" id="libTaken" value="${esc(e.taken || "")}"></label>
+    <label class="row" style="gap:8px"><input type="checkbox" id="libStale" style="width:auto" ${e.stale ? "checked" : ""}>この写真はもう古い(機材の構成が変わったなど。候補に出さない)</label>
+    <label>古い理由(任意)<input type="text" id="libStaleNote" value="${esc(e.stale_note || "")}"></label>
+    <div><b>使った記事</b>${(e.used_in || []).length ? `<ul>${e.used_in.map((u) => `<li>${esc(chName(u.channel))} ・ ${esc(u.slug)}(${esc(u.slot)})${u.public ? " ・ 公開済み" : ""}</li>`).join("")}</ul>` : '<div class="meta">まだどの記事でも使っていません(公開サイトには出ていません)</div>'}</div>
+    ${libWarn(e) ? `<div class="warn">${esc(libWarn(e))}</div>` : ""}
+  </div>
+  <div class="bar"><button class="sub" id="libDel">削除</button><button class="act" id="libSave">保存する</button></div>`;
+  libImg(e.file).then((u) => { $("#libFull").src = u; }).catch(() => {});
+  const back = () => go(libraryView, "写真ライブラリ", false);
+  $("#libSave").onclick = async () => {
+    const desc = $("#libDesc").value.trim(), alt = $("#libAlt").value.trim(), taken = $("#libTaken").value;
+    const tags = [...new Set($("#libTags").value.split(/[、,，\n]/).map((t) => t.trim()).filter(Boolean))].slice(0, 12);
+    const all = [desc, alt, ...tags, $("#libStaleNote").value].join("\n");
+    if (!desc || !alt) return toast("説明と alt を入れてください");
+    if (!/^\d{4}-\d{2}$/.test(taken)) return toast("撮影時期を選んでください");
+    if (/[—―]/.test(all)) return toast("エムダッシュは使えません");
+    if (/日本加工|業務委託先/.test(all)) return toast("業務委託先の話は扱いません");
+    const leak = secretHits(all); if (leak.length) return toast(`書けない文字列があります: ${leak[0]}`);
+    $("#libSave").disabled = true;
+    try {
+      await libUpdate((dd) => { const x = dd.photos.find((y) => y.id === id); if (!x) throw new Error("その写真が見つかりませんでした");
+        Object.assign(x, { description: desc, alt, tags, taken, stale: $("#libStale").checked, stale_note: $("#libStaleNote").value.trim() }); },
+        `写真ライブラリを直す: ${id}`);
+      toast("保存しました"); back();
+    } catch (err) { toast(err.message); $("#libSave").disabled = false; }
+  };
+  const ack = $("#libAck");
+  if (ack) twoTap(ack, "本当に確認した", async () => {
+    await libUpdate((dd) => { const x = dd.photos.find((y) => y.id === id); if (x) { x.checked = true; x.check = { ...(x.check || {}), by: "owner", at: new Date().toISOString() }; } },
+      `写真ライブラリ: 写り込みを確認した ${id}`);
+    toast("確認済みにしました"); go(() => libraryEdit(id), "写真を直す", false);
+  });
+  twoTap($("#libDel"), libWarn(e) ? "使用中だが削除する" : "本当に削除", async () => {
+    await libUpdate((dd) => { dd.photos = dd.photos.filter((y) => y.id !== id); }, `写真ライブラリから削除: ${id}`);
+    for (const path of [e.file, e.thumb].filter(Boolean)) {
+      try { const j = await gh(`${R}/contents/${path}?ref=main`);
+        await gh(`${R}/contents/${path}`, { method: "DELETE", body: JSON.stringify({ message: `写真ライブラリから削除: ${id}`, sha: j.sha }) }); } catch {}
+    }
+    toast("削除しました"); back();
+  });
+}
+async function libraryUpload() {
+  const ym = new Date().toISOString().slice(0, 7);
+  view.innerHTML = `<div class="card pad stack" style="margin-top:16px">
+    <p class="meta">記事を作る前に、写真だけをライブラリに入れておけます。撮影場所・機種・日時などの情報は自動で消え、AI が写り込みを確かめてから使えるようになります(数分)。</p>
+    <details open><summary><b>撮る前に: 写り込みのチェック</b></summary><ul class="phcheck">${PHOTO_CHECKLIST.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details>
+    <label class="row" style="gap:8px"><input type="checkbox" id="phOk" style="width:auto">上のチェックリストを確認した(アップロードに必要)</label>
+    <label>種類<select id="upKind"><option value="photo">写真</option><option value="screenshot">スクリーンショット</option></select></label>
+    <label>説明(何が写っているか)<textarea id="upDesc" rows="3" placeholder="例:Raspberry Pi 4 と外付けHDDをケーブルでつないだ状態の全景"></textarea></label>
+    <label>タグ(「、」かカンマで区切る)<input type="text" id="upTags" placeholder="例:Raspberry Pi 4、外付けHDD、NAS"></label>
+    <label>alt(読み上げ用の説明)<input type="text" id="upAlt" maxlength="120"></label>
+    <label>撮影時期<input type="month" id="upTaken" value="${ym}"></label>
+    <div class="row" style="flex-wrap:wrap;gap:8px">
+      <label class="sub phbtn">カメラで撮る<input type="file" class="phcam" accept="image/*" capture="environment" hidden></label>
+      <label class="sub phbtn">写真を選ぶ<input type="file" class="phlib" accept="image/*,.heic,.heif" hidden></label></div>
+  </div>`;
+  view.querySelectorAll(".phcam, .phlib").forEach((inp) => { inp.onchange = async () => {
+    const f = inp.files[0]; if (!f) return;
+    const desc = $("#upDesc").value.trim(), alt = $("#upAlt").value.trim(), taken = $("#upTaken").value;
+    const tags = [...new Set($("#upTags").value.split(/[、,，\n]/).map((t) => t.trim()).filter(Boolean))].slice(0, 12);
+    const all = [desc, alt, ...tags].join("\n");
+    const err = !$("#phOk").checked ? "先に「チェックリストを確認した」にチェックを入れてください" : !desc ? "説明を入れてください"
+      : !/^\d{4}-\d{2}$/.test(taken) ? "撮影時期を選んでください" : /[—―]/.test(all) ? "エムダッシュは使えません"
+      : /日本加工|業務委託先/.test(all) ? "業務委託先の話は扱いません" : secretHits(all)[0] ? `書けない文字列があります: ${secretHits(all)[0]}` : "";
+    if (err) { inp.value = ""; return toast(err); }
+    toast("写真を準備しています…");
+    try {
+      const b64 = await photoJpegB64(f);
+      const name = `up-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      await gh(`${R}/contents/library/incoming/${name}.jpg`, { method: "PUT", body: JSON.stringify({ message: `写真ライブラリに写真を置く: ${name}(このあとメタデータを消して WebP に)`, content: b64 }) });
+      await gh(`${R}/contents/library/incoming/${name}.json`, { method: "PUT", body: JSON.stringify({ message: `写真ライブラリの説明: ${name}`,
+        content: b64encode(JSON.stringify({ description: desc, alt: alt || desc.slice(0, 60), tags, taken, kind: $("#upKind").value }, null, 1) + "\n") }) });
+      toast("アップロードしました。数分でライブラリに入ります"); go(libraryView, "写真ライブラリ", false);
+    } catch (e) { toast(e.message); inp.value = ""; }
+  }; });
+}
+// 写真の枠の「ライブラリから選ぶ」。撮影指示の候補(slot.candidates)を先に、ほかは探して選ぶ
+async function libPicker(el, slot, onPick) {
+  if (!el.hidden) { el.hidden = true; return; }
+  el.hidden = false; el.innerHTML = '<p class="meta">読み込み中…</p>';
+  const d = await libLoad();
+  const ok = d.photos.filter(libUsable);
+  const cand = (slot.candidates || []).map((cid) => ok.find((e) => e.id === cid)).filter(Boolean);
+  el.innerHTML = `<div class="stack">
+    ${cand.length ? `<b>候補(撮影指示に近い写真)</b><div class="libgrid">${cand.map(libCard).join("")}</div>` : '<div class="meta">撮影指示に近い写真は見つかりませんでした。下で探せます。</div>'}
+    <input type="search" class="pkQ" placeholder="ライブラリから探す(写り込みチェック済み・古くない写真だけ)">
+    <div class="libgrid pkAll"></div>
+    <div class="pkSel"></div></div>`;
+  const draw = () => {
+    const q = el.querySelector(".pkQ").value.trim().toLowerCase();
+    const hit = q ? ok.filter((e) => q.split(/\s+/).every((w) => libText(e).includes(w))).slice(0, 20) : [];
+    el.querySelector(".pkAll").innerHTML = hit.map(libCard).join("") || (q ? '<p class="meta">見つかりませんでした</p>' : "");
+    bind();
+  };
+  const bind = () => {
+    libFillThumbs(el);
+    el.querySelectorAll("[data-lib]").forEach((b) => { b.onclick = () => {
+      const e = ok.find((x) => x.id === b.dataset.lib);
+      const sel = el.querySelector(".pkSel");
+      sel.innerHTML = `<div class="card pad stack"><b>選んだ写真</b><div>${esc(e.description || "")}</div><div class="meta">alt: ${esc(e.alt || "")}</div>
+        <button class="act pkUse">この写真を使う</button></div>`;
+      const use = sel.querySelector(".pkUse");
+      use.onclick = async () => { use.disabled = true; try { await onPick(e); } catch (err) { toast(err.message); use.disabled = false; } };
+      sel.scrollIntoView({ block: "nearest" });
+    }; });
+  };
+  el.querySelector(".pkQ").oninput = draw; bind();
+}
 async function draftCtx(n) {
   const [pr, files] = await Promise.all([gh(`${R}/pulls/${n}`), gh(`${R}/pulls/${n}/files?per_page=50`)]);
   const ch = labelOf(pr, "channel:") || "site", st = labelOf(pr, "stage:") || "final", slug = pr.head.ref.split("/").pop();
