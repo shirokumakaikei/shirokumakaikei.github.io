@@ -300,7 +300,7 @@ async function inbox() {
   const todo = [
     ...pulls.filter((p) => labelOf(p, "channel:") && !has(p, "editor")).map((p) => {
       const ch = labelOf(p, "channel:"), st = labelOf(p, "stage:") || "final";
-      return { kind: st === "ja" ? "editor" : "draft", chip: `${chName(ch)}・${STAGE_LABEL[st] || st}${has(p, "要確認") ? "・要確認" : ""}${has(p, "写真待ち") ? "・写真待ち" : ""}${has(p, "Substack下書き作成済み") ? "・Substack下書き済み" : ""}`,
+      return { kind: st === "ja" ? "editor" : "draft", chip: `${chName(ch)}・${STAGE_LABEL[st] || st}${has(p, "要確認") ? "・要確認" : ""}${has(p, "写真待ち") ? "・写真待ち" : ""}${has(p, OWNER_LABEL) ? "・オーナー確認待ち" : ""}${has(p, "Substack下書き作成済み") ? "・Substack下書き済み" : ""}`,
                t: p.title.replace(/^\[[^\]]*\]\s*/, "").replace(/^(日本語版|英語版)[:：]\s*/, ""), m: ago(p.updated_at || p.created_at),
                open: () => go(() => draft(p.number), STAGE_LABEL[st] || "下書き") };
     }),
@@ -338,6 +338,7 @@ async function inbox() {
     <button class="item" id="ytch"><div class="main"><div class="t">参考チャンネル</div><div class="m">編集長が週1で見る YouTube チャンネルの追加・削除・ジャンル分け</div></div>›</button>
     <button class="item" id="addExp"><div class="main"><div class="t">体験を追加する</div><div class="m">全媒体で使える実体験を足す</div></div>›</button>
     <button class="item" id="addPractice"><div class="main"><div class="t">実務メモを足す</div><div class="m">法令の原則とは別の、実務の慣行(しろくま会計・note で使う)</div></div>›</button>
+    <button class="item" id="hearsay"><div class="main"><div class="t">伝聞メモ</div><div class="m">受験仲間・先輩や上司・父から聞いた話(個人が分からない形で記事に使う)</div></div>›</button>
     <button class="item" id="photoLib"><div class="main"><div class="t">写真ライブラリ</div><div class="m">アップした写真の一覧。別の記事でも使い回す・記事なしで先にアップ</div></div>›</button>
     <button class="item" id="ads"><div class="main"><div class="t">広告を管理する</div><div class="m">アフィリエイトの追加・停止・削除(しろくま会計)</div></div>›</button>
   </div>
@@ -360,6 +361,7 @@ async function inbox() {
   $("#queue").onclick = () => go(queueView, "ネタ帳");
   $("#addExp").onclick = () => go(addExperience, "体験を追加");
   $("#addPractice").onclick = () => go(addPractice, "実務メモを足す");
+  $("#hearsay").onclick = () => go(hearsayView, "伝聞メモ");
   $("#ytch").onclick = () => go(ytChannelsView, "参考チャンネル");
   $("#ads").onclick = () => go(adsView, "広告");
   $("#photoLib").onclick = () => go(libraryView, "写真ライブラリ");
@@ -404,6 +406,12 @@ function factTable(f) {
 }
 // ---------- 本文を自分で直す ----------
 const HUMAN_LABEL = "人が手直し済み";
+// 伝聞(父の話・了承なしの個人的な話・インタビュー記事)。本社の tools/owner_check_label.sh が付け、デスクの「確認した」で外す
+const OWNER_LABEL = "オーナー確認待ち";
+function ownerReasons(report) {
+  const m = String(report || "").match(/### 🔒[^\n]*\n([\s\S]*?)(?=\n#{2,3} |\n*$)/);
+  return m ? m[0] : "";
+}
 const lastCheck = {};  // 保存後の検証結果(PR 番号ごと)。下書き画面の上に出す
 function splitRaw(text) {  // front matter はそのまま残し、本文だけを差し替えるため
   const m = text.match(/^(---\n[\s\S]*?\n---\n)([\s\S]*)$/);
@@ -1019,6 +1027,7 @@ async function draft(n) {
   if (ch === "substack" && st === "en") { try { sbMeta = JSON.parse((await getFile(`outbox/substack/${slug}/meta.json`)).text); } catch {} }
   let photoMan = null; try { photoMan = photoFile ? JSON.parse(photoFile.text) : null; } catch {}
   const photoWait = photoMan ? photoMan.slots.filter((x) => !PHOTO_DONE.includes(x.status)).length : 0;
+  const ownerWait = pr.labels.some((l) => l.name === OWNER_LABEL);
   const thumbSrc = thumbFile?.content ? `data:image/png;base64,${thumbFile.content.replace(/\n/g, "")}` : "";
   let facts = null; try { facts = factFile ? JSON.parse(factFile.text) : null; } catch {}
   const { meta, body } = splitFront(file.text);
@@ -1030,6 +1039,7 @@ async function draft(n) {
   const size = st === "en" ? `${words}語` : `${body.replace(/\s/g, "").length}字`;
   let primary = "";
   if (st === "ja") primary = `<button class="act" id="pub">日本語版OK → 英訳へ</button>`;
+  else if (ownerWait) primary = `<button class="act" id="pub" disabled>オーナー確認待ち(上の「確認した」を押す)</button>`;
   else if (photoWait) primary = `<button class="act" id="pub" disabled>写真待ち(${photoWait}枚)</button>`;
   else if (isSite) primary = `<button class="act" id="pub">公開する</button>`;
   else if (outbox) primary = `<button class="act" id="pub">承認する(note 登録待ちへ)</button>`;
@@ -1037,6 +1047,9 @@ async function draft(n) {
   view.innerHTML = `
   <div class="stack" style="margin-top:16px">
     ${closed ? `<div class="warn">このPRはすでに${pr.merged ? "承認済み" : "閉じられています"}。</div>` : ""}
+    ${ownerWait && !closed ? `<div class="warn stack"><div class="md">${md(ownerReasons(latestReport) || "### 🔒 公開前にオーナーの確認が必要です(伝聞)")}</div>
+      <div class="meta">伝聞の扱い(誰の話か分からないか、了承の要る話ではないか、顧問先の話が入っていないか)を本文で確かめてから押してください。押すと公開できるようになります。</div>
+      <button class="sub" id="ownerOk">確認した(公開してよい)</button></div>` : ""}
     ${warn ? `<div class="warn md">${md(warn)}</div>` : ""}
     ${facts && facts.claims.some((c) => c.verdict === "wrong") ? '<div class="warn">ファクトチェックで<b>誤り</b>が残っています(要確認)。下の表で出典と照らしてください。</div>' : ""}
     ${lastCheck[n] ? checkPanel(lastCheck[n]) : ""}
@@ -1092,6 +1105,12 @@ async function draft(n) {
   if (closed) return;
   const ed = $("#edit");
   if (ed) ed.onclick = () => go(() => editBody(n), "自分で直す");
+  const ok = $("#ownerOk");
+  if (ok) twoTap(ok, "本当に確認した", async () => {
+    await gh(`${R}/issues/${n}/labels/${encodeURIComponent(OWNER_LABEL)}`, { method: "DELETE" });
+    await gh(`${R}/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body: "オーナーが伝聞の扱いを確認しました(デスクから)。公開できます。" }) });
+    toast("確認済みにしました"); go(() => draft(n), current?.title || "下書き", false);
+  });
   if (photoMan && photoMan.slots.length) renderPhotos($("#photos"), { n, ch, slug, ref: pr.head.ref, man: photoMan, closed, isSite });
   if (st === "ja") {
     twoTap($("#pub"), "英訳を始める", async () => {
@@ -1428,6 +1447,183 @@ async function addPractice() {
       await putFile("shared/practice-notes.md", text, f.sha, "実務メモを足す");
       toast("追加しました。次の記事から使われます"); $("#pn").value = ""; $("#add").disabled = false;
     } catch (e) { toast(/404/.test(e.message) ? "実務メモのファイルがまだありません(本社の PR をマージしてから使えます)" : e.message); $("#add").disabled = false; }
+  };
+}
+
+// ---------- 伝聞メモ(本社の shared/hearsay.yml。非公開) ----------
+// 受験仲間・前職や現職の先輩や上司・父(税理士)から聞いた話。記事では誰の話か分からない形にする(本社の tools/hearsay.py が検証)
+const HS_PATH = "shared/hearsay.yml";
+const HS_WHO = ["受験生仲間", "前職の先輩", "前職の上司", "現職の先輩", "現職の上司", "父(税理士)", "その他の知り合い"];
+const HS_KIND = ["経験談", "業界の慣行", "その他"];
+const HS_CONSENT = ["取った", "取っていない", "不要"];
+const HS_KEYS = ["id", "who", "year", "kind", "consent", "personal", "standalone", "text"];
+function hsValue(v) {
+  v = v.trim();
+  if (/^".*"$/.test(v)) { try { return JSON.parse(v); } catch { return v.slice(1, -1); } }
+  v = v.replace(/\s+#.*$/, "");
+  if (v === "true" || v === "false") return v === "true";
+  if (/^\d+$/.test(v)) return +v;
+  return v;
+}
+function parseHearsay(text) {
+  const lines = text.split("\n");
+  const at = lines.findIndex((l) => /^settings:/.test(l));
+  const header = (at < 0 ? [] : lines.slice(0, at)).join("\n");
+  const settings = { father_public: false, father_alias: "知り合いのベテラン税理士" }, items = [];
+  let mode = "", cur = null;
+  for (const l of lines.slice(Math.max(at, 0))) {
+    if (/^settings:/.test(l)) { mode = "s"; continue; }
+    if (/^items:/.test(l)) { mode = "i"; continue; }
+    let m;
+    if (mode === "s" && (m = l.match(/^  (\w+):\s*(.*)$/))) settings[m[1]] = hsValue(m[2]);
+    if (mode === "i" && (m = l.match(/^  - (\w+):\s*(.*)$/))) { cur = { [m[1]]: hsValue(m[2]) }; items.push(cur); }
+    else if (mode === "i" && cur && (m = l.match(/^    (\w+):\s*(.*)$/))) cur[m[1]] = hsValue(m[2]);
+  }
+  return { header, settings, items };
+}
+function dumpHearsay({ header, settings, items }) {
+  const out = [header.replace(/\n+$/, ""), "settings:", `  father_public: ${settings.father_public ? "true" : "false"}`,
+    `  father_alias: ${JSON.stringify(String(settings.father_alias || "知り合いのベテラン税理士"))}`];
+  if (!items.length) out.push("items: []");
+  else {
+    out.push("items:");
+    for (const it of items) HS_KEYS.forEach((k, i) => {
+      const v = it[k];
+      const val = typeof v === "boolean" ? String(v) : k === "year" ? String(+v) : JSON.stringify(String(v ?? ""));
+      out.push(`${i ? "    " : "  - "}${k}: ${val}`);
+    });
+  }
+  return out.filter((x, i) => i || x).join("\n") + "\n";
+}
+const HS_CLIENT = /顧問先|関与先|クライアント|取引先|担当先|お客さん/;
+function hearsayErr(it) {
+  const y = +it.year, now = new Date().getFullYear();
+  if (!HS_WHO.includes(it.who)) return "話した人を選んでください";
+  if (!(Number.isInteger(y) && y >= 1970 && y <= now)) return "時期は西暦の年だけを入れてください(例: 2019)";
+  if (!it.text) return "内容を書いてください";
+  if (/[—―]/.test(it.text)) return "エムダッシュは使えません";
+  if (/日本加工|業務委託先/.test(it.text)) return "業務委託先の話は扱いません";
+  if (it.who === "父(税理士)" && HS_CLIENT.test(it.text)) return "父の顧問先に関わる話は、ぼかしても使えません(税理士法第38条)。父本人の経験だけにしてください";
+  if (it.standalone && it.consent !== "取った") return "単独記事にするには、本人の了承「取った」が必要です";
+  const leak = secretHits(it.text);
+  if (leak.length) return `書けない文字列があります: ${leak[0]}`;
+  return "";
+}
+const hsCanSolo = (it) => it.standalone && it.consent === "取った" && !hearsayErr(it);
+async function hearsayView() {
+  let f;
+  try { f = await getFile(HS_PATH); } catch (e) {
+    view.innerHTML = `<p class="empty">${/404/.test(e.message) ? "伝聞メモのファイルがまだありません(本社の PR をマージしてから使えます)" : esc(e.message)}</p>`; return;
+  }
+  const hs = parseHearsay(f.text);
+  view.innerHTML = `
+  <div class="stack" style="margin-top:16px">
+    <p class="meta">聞いた話を1件ずつ残します(非公開)。記事では「受験仲間の一人は〜と言っていた」のように、誰の話か分からない形で使われます。名前・会社名・地域・日付・金額は記事に出ません(検証が止めます)。顧問先の話と、現職の社内事情は使えません。</p>
+    <div class="bar" style="position:static"><button class="act" id="hsAdd">話を追加する</button></div>
+    <div class="card list">${hs.items.map((it, i) => `
+      <div class="item" style="cursor:default"><div class="main">
+        <div class="m">${esc(it.who)} ・ ${esc(String(it.year))}年 ・ ${esc(it.kind)} ・ 了承: ${esc(it.consent)}${it.personal ? " ・ 個人的な話" : ""}${it.standalone ? " ・ 単独記事にできる" : ""}${hearsayErr(it) ? " ・ ⚠ 使えない" : ""}</div>
+        <div class="t" style="font-weight:400">${esc(String(it.text).slice(0, 80))}${String(it.text).length > 80 ? "…" : ""}</div>
+        <div class="row" style="margin-top:6px"><button class="sub" data-edit="${i}">直す</button><button class="sub" data-del="${i}">削除</button>
+        ${hsCanSolo(it) ? `<button class="sub" data-solo="${i}">この話で1本書く</button>` : ""}</div>
+      </div></div>`).join("") || '<p class="empty">まだありません。</p>'}</div>
+    <div class="card pad stack"><b>父の書き方</b>
+      <label class="row"><input type="checkbox" id="fPub" ${hs.settings.father_public ? "checked" : ""} style="width:auto"> 記事で「父が税理士」と書く</label>
+      <label>書かないときの言い方<input type="text" id="fAlias" value="${esc(hs.settings.father_alias || "知り合いのベテラン税理士")}"></label>
+      <div class="meta">父の話を使った記事は、どちらでも公開前にオーナーの確認待ちになります。</div>
+      <button class="sub" id="fSave">父の書き方を保存する</button></div>
+  </div>`;
+  const save = async (fn, msg) => {
+    const cur = await getFile(HS_PATH);  // 保存の直前に読み直す(ほかの端末の変更を消さない)
+    const h = parseHearsay(cur.text);
+    fn(h);
+    await putFile(HS_PATH, dumpHearsay(h), cur.sha, msg);
+  };
+  $("#hsAdd").onclick = () => go(() => hearsayForm(null), "伝聞を追加");
+  view.querySelectorAll("[data-edit]").forEach((b) => { b.onclick = () => go(() => hearsayForm(hs.items[+b.dataset.edit].id), "伝聞を直す"); });
+  view.querySelectorAll("[data-solo]").forEach((b) => { b.onclick = () => go(() => hearsaySolo(hs.items[+b.dataset.solo]), "この話で1本書く"); });
+  view.querySelectorAll("[data-del]").forEach((b) => twoTap(b, "本当に削除", async () => {
+    const id = hs.items[+b.dataset.del].id;
+    await save((h) => { h.items = h.items.filter((x) => x.id !== id); }, `伝聞メモを削除: ${id}`);
+    toast("削除しました"); go(hearsayView, "伝聞メモ", false);
+  }));
+  $("#fSave").onclick = async () => {
+    const alias = $("#fAlias").value.trim();
+    if (!alias || /税理士の父|父/.test(alias)) return toast("書かないときの言い方に「父」は使えません(例: 知り合いのベテラン税理士)");
+    $("#fSave").disabled = true;
+    try { await save((h) => { h.settings.father_public = $("#fPub").checked; h.settings.father_alias = alias; }, "伝聞メモ: 父の書き方");
+      toast("保存しました"); } catch (e) { toast(e.message); }
+    $("#fSave").disabled = false;
+  };
+}
+async function hearsayForm(id) {
+  const hs = parseHearsay((await getFile(HS_PATH)).text);
+  const it = hs.items.find((x) => x.id === id) || { who: "", year: new Date().getFullYear(), kind: "経験談", consent: "不要", personal: false, standalone: false, text: "" };
+  const opts = (list, v) => list.map((x) => `<option ${x === v ? "selected" : ""}>${esc(x)}</option>`).join("");
+  view.innerHTML = `
+  <div class="card pad stack" style="margin-top:16px">
+    <label>話した人<select id="hsWho"><option value="">選んでください</option>${opts(HS_WHO, it.who)}</select></label>
+    <label>聞いた時期(年だけ)<input type="number" inputmode="numeric" id="hsYear" value="${esc(String(it.year))}" min="1970" max="${new Date().getFullYear()}"></label>
+    <label>区分<select id="hsKind">${opts(HS_KIND, it.kind)}</select></label>
+    <label>本人の了承<select id="hsConsent">${opts(HS_CONSENT, it.consent)}</select></label>
+    <label class="row"><input type="checkbox" id="hsPersonal" ${it.personal ? "checked" : ""} style="width:auto"> 個人的な話(失敗談・家庭の事情など)</label>
+    <label class="row"><input type="checkbox" id="hsSolo" ${it.standalone ? "checked" : ""} style="width:auto"> この話だけで1本の記事にしてよい(了承「取った」のときだけ)</label>
+    <label>内容<textarea id="hsText" rows="6" placeholder="例:簿記論は、計算を毎日解いて手を止めないのがいちばん効いたと言っていた">${esc(it.text || "")}</textarea></label>
+    <p class="meta">メモなので名前や金額が入っていても構いません(記事には出ません)。顧問先の話(父の顧問先も)と、現職の社内事情、業務委託先の話は書かないでください。了承を取っていない個人的な話と父の話は、使った記事が公開前にオーナーの確認待ちになります。</p>
+  </div>
+  <div class="bar"><button class="act" id="hsSave">保存する</button></div>`;
+  const sync = () => { const ok = $("#hsConsent").value === "取った"; $("#hsSolo").disabled = !ok; if (!ok) $("#hsSolo").checked = false; };
+  $("#hsConsent").onchange = sync; sync();
+  $("#hsSave").onclick = async () => {
+    const v = { who: $("#hsWho").value, year: +$("#hsYear").value, kind: $("#hsKind").value, consent: $("#hsConsent").value,
+                personal: $("#hsPersonal").checked, standalone: $("#hsSolo").checked, text: $("#hsText").value.trim().replace(/\n+/g, " ") };
+    const err = hearsayErr(v);
+    if (err) return toast(err);
+    $("#hsSave").disabled = true;
+    try {
+      const cur = await getFile(HS_PATH);
+      const h = parseHearsay(cur.text);
+      if (id) {
+        const x = h.items.find((y) => y.id === id);
+        if (!x) throw new Error("その話が見つかりませんでした(ほかの端末で削除された可能性があります)");
+        Object.assign(x, v);
+      } else {
+        const n = Math.max(0, ...h.items.map((y) => +String(y.id).replace(/\D/g, "") || 0)) + 1;
+        h.items.push({ id: `h${String(n).padStart(3, "0")}`, ...v });
+      }
+      await putFile(HS_PATH, dumpHearsay(h), cur.sha, id ? `伝聞メモを直す: ${id}` : "伝聞メモを追加");
+      toast("保存しました。次の記事から使われます");
+      history_.length ? $("#back").onclick() : home();
+    } catch (e) { toast(e.message); $("#hsSave").disabled = false; }
+  };
+}
+// 伝聞1つを1本の記事にする(インタビュー・体験談)。しろくま会計のネタ帳の先頭に type: interview で入れる
+async function hearsaySolo(it) {
+  view.innerHTML = `
+  <div class="card pad stack" style="margin-top:16px">
+    <p class="meta">「${esc(String(it.text).slice(0, 60))}」を中心に、しろくま会計で1本書きます。構成は「話の要点 → 背景 → 学べること → 読者がすぐ使えること」。年代や事務所の規模などは削るか変えます。公開前に必ずオーナーの確認待ちになります。</p>
+    <label>狙う検索キーワード<input type="text" id="kw" placeholder="例:税理士 開業 昔と今"></label>
+    <label>切り口(どういう話にするか)<textarea id="angle"></textarea></label>
+    <label>カテゴリ<select id="cat">${CATS.map((c) => `<option>${c}</option>`).join("")}</select></label>
+  </div>
+  <div class="bar"><button class="act" id="add">ネタ帳の先頭に入れる</button></div>`;
+  $("#add").onclick = async () => {
+    const kw = $("#kw").value.trim(), angle = $("#angle").value.trim();
+    if (!kw || !angle) return toast("キーワードと切り口を入れてください");
+    $("#add").disabled = true;
+    try {
+      const path = "channels/site/queue.yml";
+      const q = await getFile(path);
+      const d = new Date();
+      const slug = `interview-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}-${String(it.id).toLowerCase()}`;
+      if (queueBlocks(q.text).blocks.some((b) => b.slug === slug)) throw new Error("この話のネタは今日すでに入っています");
+      const block = [`  - slug: ${slug}`, "    type: interview", `    hearsay_id: ${yq(it.id)}`, `    keyword: ${yq(kw)}`, `    angle: ${yq(angle)}`,
+        `    category: ${yq($("#cat").value)}`, `    notes: ${yq(`伝聞 ${it.id} を中心にしたインタビュー・体験談`)}`];
+      const lines = q.text.replace(/\n+$/, "").replace(/^topics:\s*\[\]\s*$/m, "topics:").split("\n");
+      lines.splice(lines.findIndex((l) => /^topics:/.test(l)) + 1, 0, ...block);
+      await putFile(path, lines.join("\n") + "\n", q.sha, `ネタ追加(site): インタビュー・体験談 ${it.id}`);
+      toast("ネタ帳の先頭に入れました"); home();
+    } catch (e) { toast(e.message); $("#add").disabled = false; }
   };
 }
 
