@@ -294,7 +294,7 @@ async function inbox() {
   const todo = [
     ...pulls.filter((p) => labelOf(p, "channel:") && !has(p, "editor")).map((p) => {
       const ch = labelOf(p, "channel:"), st = labelOf(p, "stage:") || "final";
-      return { kind: st === "ja" ? "editor" : "draft", chip: `${chName(ch)}・${STAGE_LABEL[st] || st}${has(p, "要確認") ? "・要確認" : ""}${has(p, "写真待ち") ? "・写真待ち" : ""}`,
+      return { kind: st === "ja" ? "editor" : "draft", chip: `${chName(ch)}・${STAGE_LABEL[st] || st}${has(p, "要確認") ? "・要確認" : ""}${has(p, "写真待ち") ? "・写真待ち" : ""}${has(p, "Substack下書き作成済み") ? "・Substack下書き済み" : ""}`,
                t: p.title.replace(/^\[[^\]]*\]\s*/, "").replace(/^(日本語版|英語版)[:：]\s*/, ""), m: ago(p.updated_at || p.created_at),
                open: () => go(() => draft(p.number), STAGE_LABEL[st] || "下書き") };
     }),
@@ -787,6 +787,9 @@ async function draft(n) {
     getFile(`facts/${ch}/${slug}.json`, pr.head.ref).catch(() => null),
     thumbPath ? gh(`${R}/contents/${thumbPath}?ref=${encodeURIComponent(pr.head.ref)}`).catch(() => null) : null,
     getFile(photoManifestPath(ch, slug), pr.head.ref).catch(() => null)]);
+  // Inside Japan Tax の英語版: サーバーPC が Substack に下書きを作ったか(本社の outbox/substack/<slug>/meta.json)
+  let sbMeta = null;
+  if (ch === "substack" && st === "en") { try { sbMeta = JSON.parse((await getFile(`outbox/substack/${slug}/meta.json`)).text); } catch {} }
   let photoMan = null; try { photoMan = photoFile ? JSON.parse(photoFile.text) : null; } catch {}
   const photoWait = photoMan ? photoMan.slots.filter((x) => !PHOTO_DONE.includes(x.status)).length : 0;
   const thumbSrc = thumbFile?.content ? `data:image/png;base64,${thumbFile.content.replace(/\n/g, "")}` : "";
@@ -818,6 +821,9 @@ async function draft(n) {
       <img src="${thumbSrc}" alt="${isSite ? "OGP 画像" : "見出し画像"}のプレビュー" style="width:100%;height:auto;border-radius:6px;border:1px solid var(--line)">
       <div class="meta">${outbox ? "承認すると、記事と一緒に note 登録待ちに置かれ、PC の下書き登録で見出し画像として設定されます。" : isSite ? "公開すると、記事と一緒にサイトに置かれ、X や LINE で共有したときにこの画像が出ます。" : ""}</div></div>`
       : (meta.thumb_title ? '<div class="warn">サムネ(見出し画像)がまだできていません。報告の「⚠」を確認してください。</div>' : "")}
+    ${ch === "substack" && st === "en" ? `<div class="card pad stack"><b>Substack の下書き</b>${sbMeta?.drafted_at
+      ? `<div class="meta">サーバーPC が下書きを作りました(${esc(when(sbMeta.drafted_at))})。公開はしていません。中身を確かめて Substack で公開したら、下の「投稿済みにする」を押してください。</div>${sbMeta.draft_url ? `<a href="${esc(sbMeta.draft_url)}" target="_blank" rel="noopener">Substack で下書きを開く</a>` : ""}`
+      : `<div class="meta">${sbMeta ? "下書き待ちです。毎朝 6 時すぎにサーバーPC が Substack に下書きを作ります(1回2本まで)。" : "毎朝 5 時すぎに下書き待ちに入り、6 時すぎにサーバーPC が Substack に下書きを作ります。"}急ぐときは、下の「HTMLをコピー」で手で貼っても構いません。</div>`}</div>` : ""}
     ${!isSite && !outbox && st !== "ja" ? `<div class="row"><button class="sub" id="copy">${htmlFile ? "HTMLをコピー" : "本文をコピー"}</button><span class="meta">コピーして投稿画面に貼り付け、投稿し終えたら「投稿済みにする」</span></div>` : ""}
     <iframe class="preview" id="pv" title="公開イメージ"></iframe>
     ${meta.sources ? `<details class="card pad"><summary>一次資料</summary><div class="md">${md(file.text.match(/^sources:\n((?:\s+-.*\n?)+)/m)?.[1] || "")}</div></details>` : ""}
