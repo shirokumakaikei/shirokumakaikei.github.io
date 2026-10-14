@@ -54,6 +54,14 @@ PHOTO_MAX_BYTES = 400_000
 PHOTO_SRC_RE = re.compile(r"^assets/photos/(?:articles|lab)/[a-z0-9-]+/p\d+\.webp$")
 WEBP_OK_CHUNKS = {b"VP8 ", b"VP8L", b"VP8X", b"ALPH", b"ANIM", b"ANMF"}
 
+# LINE 公式アカウントへの誘導(本社の docs/line-funnel.md)。content/line.yml の enabled が true で、媒体の友だち追加 URL があるときだけ、
+# 全記事(md の記事・手書きの記事・しろくまラボ)の本文の後ろに、記事のテーマに合わせた枠を build が入れる。本文には書かせない
+LINE_CONF = "content/line.yml"
+LINE_THEMES = ("career", "dx", "shikaku", "it")
+LINE_URL_RE = re.compile(r"^https://(?:lin\.ee|line\.me)/[A-Za-z0-9_@%/?=&.~-]+$")
+LINE_LINK_RE = re.compile(r"https?://(?:lin\.ee|line\.me|page\.line\.me)/", re.I)
+LINE_MARK = "<!-- line-cta -->"
+
 AUTHOR_NOTE = (
     "税理士法人で約3年半、法人・個人の顧問を担当したあと、不動産業の事業会社で経理を担当しています。"
     "税理士試験は科目合格。事務所と事業会社の両方を経験した立場から、この記事を書いています。"
@@ -128,6 +136,84 @@ def load_ads(active_only: bool = False) -> dict:
     if active_only:
         ads = {k: v for k, v in ads.items() if v.get("active", True)}
     return ads
+
+
+def load_line() -> dict:
+    """content/line.yml(LINE 公式アカウントの誘導の設定)。無ければ空(誘導を出さない)。"""
+    p = ROOT / LINE_CONF
+    return (yaml.safe_load(p.read_text(encoding="utf-8")) or {}) if p.exists() else {}
+
+
+def check_line(conf: dict) -> list[str]:
+    """LINE の誘導の設定。テーマ4つの文面はいつも必須。enabled のときは、サイトとラボの友だち追加 URL も必須。"""
+    errs = []
+    themes = conf.get("themes") or {}
+    for t in LINE_THEMES:
+        th = themes.get(t) or {}
+        for k in ("tag", "title", "text"):
+            if not str(th.get(k) or "").strip():
+                errs.append(f"{LINE_CONF}: themes.{t}.{k} がありません")
+        if th.get("gift_ready") and not str(th.get("gift") or "").strip():
+            errs.append(f"{LINE_CONF}: themes.{t} は gift_ready なのに gift(特典の名前)がありません")
+    for k, v in (conf.get("category_theme") or {}).items():
+        if v not in LINE_THEMES:
+            errs.append(f"{LINE_CONF}: category_theme の {k} のテーマ {v} は {'/'.join(LINE_THEMES)} のどれか")
+    for k, u in (conf.get("add_urls") or {}).items():
+        if u and not LINE_URL_RE.match(str(u)):
+            errs.append(f"{LINE_CONF}: add_urls.{k} は https://lin.ee/... か https://line.me/... の友だち追加 URL")
+    if conf.get("enabled"):
+        urls = conf.get("add_urls") or {}
+        for media in ("site", "lab"):
+            if not urls.get(media):
+                errs.append(f"{LINE_CONF}: enabled なのに add_urls.{media}(友だち追加 URL)がありません")
+    text = yaml.safe_dump(conf, allow_unicode=True)
+    for b in BANNED:
+        if b in text:
+            errs.append(f"{LINE_CONF}: 禁止文字 {b!r} が含まれています")
+    return errs
+
+
+def line_theme(a: dict, section: str = "articles") -> str:
+    """記事の誘導のテーマ。front matter の line_theme > ラボは it > カテゴリ(content/line.yml の category_theme)> career。"""
+    t = str(a.get("line_theme") or "")
+    if t in LINE_THEMES:
+        return t
+    if section == "lab":
+        return "it"
+    return (load_line().get("category_theme") or {}).get(a.get("category"), "career")
+
+
+def line_cta(theme: str, media: str = "site") -> str:
+    """記事末尾の LINE の誘導の枠。設定が無い・止めている・URL が無いときは空。
+    URL は媒体とテーマごと(add_urls の site-career など)、無ければ媒体ごと。LINE の「友だち追加経路」で流入元を数える。"""
+    conf = load_line()
+    if not conf.get("enabled"):
+        return ""
+    urls = conf.get("add_urls") or {}
+    url = str(urls.get(f"{media}-{theme}") or urls.get(media) or "")
+    th = (conf.get("themes") or {}).get(theme) or {}
+    if not LINE_URL_RE.match(url) or not th.get("title"):
+        return ""
+    gift = (f'<p class="line-cta-gift">友だち追加の特典: {esc(str(th["gift"]))}</p>'
+            if th.get("gift_ready") and th.get("gift") else "")
+    note = esc(str(conf.get("note") or ""))
+    return (f'{LINE_MARK}\n<aside class="line-cta" data-theme="{esc(theme)}">\n'
+            f'<p class="line-cta-label">LINE で受け取る</p>\n'
+            f'<p class="line-cta-title">{esc(str(th["title"]))}</p>\n'
+            f'<p class="line-cta-text">{esc(str(th["text"]))}</p>\n{gift}\n'
+            f'<a class="line-cta-btn" href="{esc(url)}" target="_blank" rel="noopener">LINE で友だち追加する</a>\n'
+            + (f'<p class="line-cta-note">{note}</p>\n' if note else "") + '</aside>\n')
+
+
+def add_line_to_legacy(html_text: str, theme: str) -> str:
+    """手書きの記事(articles/*.html)の本文の最後(</main> の直前の </div> の前)に誘導を入れる。2回は入れない。"""
+    cta = line_cta(theme)
+    if not cta or LINE_MARK in html_text:
+        return html_text
+    new, n = re.subn(r"\n\s*</div>\s*\n</main>", lambda m: "\n" + cta + m.group(0), html_text, count=1)
+    if n != 1:
+        raise BuildError("手書きの記事に </div></main> が見つからず、LINE の誘導を入れられません")
+    return new
 
 
 def ad_type(ad: dict) -> str:
@@ -370,6 +456,10 @@ def validate(a: dict) -> list[str]:
     errs += check_ads(name, body, strict=False)
     if "<script" in body.lower():
         errs.append(f"{name}: 本文に<script>は使えません")
+    if LINE_LINK_RE.search(body):
+        errs.append(f"{name}: LINE への誘導はテンプレートが入れるので、本文に LINE のリンクを書かない")
+    if a.get("line_theme") and a["line_theme"] not in LINE_THEMES:
+        errs.append(f"{name}: line_theme は {'/'.join(LINE_THEMES)} のどれか")
     h2 = a.get("body_md", "").count("\n## ") + a.get("body_md", "").startswith("## ")
     if not (3 <= h2 <= 7):
         errs.append(f"{name}: 見出し(##)が{h2}個。4〜6個にする")
@@ -379,7 +469,7 @@ def validate(a: dict) -> list[str]:
 
 
 def validate_lab(a: dict) -> list[str]:
-    """しろくまラボの記事。作業時期と動作確認した環境が必須。広告は置かない。"""
+    """しろくまラボの記事。作業時期と動作確認した環境が必須。広告は使った機材の商品リンクだけ。"""
     errs = []
     name = a["slug"]
     if not SLUG_RE.match(name):
@@ -404,16 +494,22 @@ def validate_lab(a: dict) -> list[str]:
     for b in BANNED:
         if b in joined:
             errs.append(f"lab/{name}: 禁止文字 {b!r} が含まれています")
-    if AD_RE.search(body):
-        errs.append(f"lab/{name}: しろくまラボの記事に広告は置かない")
+    # 広告は「使った機材」の商品リンク(type: product)だけ。転職サービスなどの広告は置かない
+    ads = load_ads(active_only=True)
+    for m in AD_RE.finditer(body):
+        if m.group(1) in ads and ad_type(ads[m.group(1)]) != "product":
+            errs.append(f"lab/{name}: しろくまラボに置けるのは使った機材の商品リンクだけ({m.group(1)} はサービスの広告)")
+    errs += [e.replace(f"{name}: ", f"lab/{name}: ", 1) for e in check_ads(name, body, strict=False)]
+    if LINE_LINK_RE.search(body):
+        errs.append(f"lab/{name}: LINE への誘導はテンプレートが入れるので、本文に LINE のリンクを書かない")
     if "<script" in body.lower():
         errs.append(f"lab/{name}: 本文に<script>は使えません")
     plain = len(re.sub(r"[#*\[\]()\-\s`]", "", body))
-    if not (1500 <= plain <= 8000):
-        errs.append(f"lab/{name}: 本文が{plain}字。2,000〜5,000字を目安に収める")
+    if not (1500 <= plain <= 10000):
+        errs.append(f"lab/{name}: 本文が{plain}字。3,000〜6,000字を目安に収める")
     h2 = body.count("\n## ") + body.startswith("## ")
-    if not (3 <= h2 <= 8):
-        errs.append(f"lab/{name}: 見出し(##)が{h2}個。4〜7個にする")
+    if not (3 <= h2 <= 10):
+        errs.append(f"lab/{name}: 見出し(##)が{h2}個。7〜8個にする(記事の型)")
     errs += [e.replace(f"{name}: ", f"lab/{name}: ", 1) for e in secret_errs(a) + photo_errs(a, "lab")]
     return errs
 
@@ -439,6 +535,7 @@ def load_all() -> list[dict]:
     md = [parse_md(p) for p in sorted((ROOT / "content/articles").glob("*.md"))]
     errs = [e for a in md for e in validate(a)]
     errs += [e for pid, ad in load_ads(active_only=True).items() if ad_type(ad) == "product" for e in product_errs(pid, ad)]
+    errs += check_line(load_line())
     slugs = [a["slug"] for a in legacy + md]
     dup = {s for s in slugs if slugs.count(s) > 1}
     if dup:
@@ -554,6 +651,7 @@ def render_article(a: dict, all_slugs: set[str]) -> str:
     </div>
 
 {body}
+    {line_cta(line_theme(a))}
     {f'<p class="amazon-note">{AMAZON_NOTE}</p>' if amazon else ''}
   </div>
 </main>
@@ -586,7 +684,9 @@ def lab_head(title: str, desc: str, url: str, og_type: str = "article") -> str:
 
 
 def render_lab_article(a: dict, lab_slugs: set[str], article_slugs: set[str]) -> str:
-    body = markdown.markdown(expand_photos(a["body_md"], a, "lab"), extensions=["tables", "sane_lists", "fenced_code"])
+    body_md, has_ad = expand_ads(expand_photos(a["body_md"], a, "lab"))  # 使った機材(商品リンク)だけ
+    amazon = uses_amazon(a["body_md"])
+    body = markdown.markdown(body_md, extensions=["tables", "sane_lists", "fenced_code"])
     for target in re.findall(r'href="([a-z0-9-]+)\.html"', body):
         if target not in lab_slugs and target != "index":
             raise BuildError(f"lab/{a['slug']}: 内部リンク先 {target}.html がしろくまラボにありません")
@@ -639,6 +739,7 @@ def render_lab_article(a: dict, lab_slugs: set[str], article_slugs: set[str]) ->
 
 <main>
   <div class="wrap">
+    {PR_NOTE if has_ad else ""}
     <div class="note lab-env">
       <p><strong>作業時期</strong> {esc(str(a["worked_on"]))}</p>
       <p><strong>動作確認した環境</strong></p>
@@ -646,6 +747,8 @@ def render_lab_article(a: dict, lab_slugs: set[str], article_slugs: set[str]) ->
     </div>
 
 {body}
+    {line_cta("it", "lab")}
+    {f'<p class="amazon-note">{AMAZON_NOTE}</p>' if amazon else ''}
 
     <div class="note lab-disclaimer">
       <p><strong>免責</strong></p>
@@ -821,6 +924,10 @@ def build(out: Path) -> list[dict]:
     if out.exists():
         shutil.rmtree(out)
     shutil.copytree(ROOT, out, ignore=lambda d, names: [n for n in names if Path(d) == ROOT and n in EXCLUDE])
+    for a in articles:  # 手書きの記事にも LINE の誘導を入れる(リポジトリの元ファイルは書き換えない)
+        if a["legacy"]:
+            rendered[f"articles/{a['slug']}.html"] = add_line_to_legacy(
+                (ROOT / "articles" / f"{a['slug']}.html").read_text(encoding="utf-8"), line_theme(a))
     for rel, content in rendered.items():
         p = out / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -841,6 +948,8 @@ def main() -> int:
             for a in articles:
                 if not a["legacy"]:
                     render_article(a, slugs)
+                else:
+                    add_line_to_legacy((ROOT / "articles" / f"{a['slug']}.html").read_text(encoding="utf-8"), line_theme(a))
             lab = load_lab()
             for a in lab:
                 render_lab_article(a, {x["slug"] for x in lab}, slugs)

@@ -975,11 +975,17 @@ async function checkBody(c, text) {
   }
   if (c.ch === "lab") {
     for (const h of secretHits(text)) errs.push(`公開してはいけない文字列: ${h}`);
-    if (/\[\[ad:/.test(body)) errs.push("しろくまラボの記事に広告は置かない");
+    // 置けるのは「使った機材」の商品リンクだけ(build.py の validate_lab と同じ)
+    if (marks.length) {
+      let types = {};
+      try { types = Object.fromEntries(parseAds((await getFile(ADS_PATH, "", SITE_REPO)).text).ads.map((a) => [a.id, a.type])); } catch {}
+      for (const m of marks) if (types[m.id] && types[m.id] !== "product") errs.push(`しろくまラボに置けるのは使った機材の商品リンクだけ(${m.id} はサービスの広告)`);
+    }
   }
   if (onSite(c.ch)) {
     if (body.includes("この記事を書いた人")) errs.push("「この記事を書いた人」はテンプレートが入れるので本文に書かない");
     if (/\[[^\]]*\.html\]\(/.test(body)) errs.push("リンクの表示文字がファイル名になっている");
+    if (/https?:\/\/(lin\.ee|line\.me|page\.line\.me)\//i.test(body)) errs.push("LINE への誘導はテンプレートが入れるので、本文に LINE のリンクを書かない");
   }
   return { errs, warns, info, at: new Date() };
 }
@@ -1068,7 +1074,7 @@ async function draft(n) {
       <main><div class="wrap">${ch === "lab" ? `<div class="note"><p><strong>作業時期</strong> ${esc(meta.worked_on || "(未記入)")}</p><p><strong>動作確認した環境</strong></p><ul>${
         [...file.text.split(/\n---\n/)[0].matchAll(/^\s+-\s*"?(.+?)"?\s*$/gm)].map((m) => `<li>${esc(m[1])}</li>`).join("") || "<li>(未記入)</li>"}</ul></div>`
         : (/\[\[ad:/.test(body) ? '<p class="pr-note">この記事にはプロモーション(広告)を含みます。</p>' : "") + '<div class="note"><p><strong>この記事を書いた人</strong></p><p>(テンプレートの著者欄)</p></div>'}
-      ${md(adPreview(body, adTypes)).replace(/href="([a-z0-9-]+\.html)"/g, `href="${SITE}/${ch === "lab" ? "lab" : "articles"}/$1"`)}${ch === "lab" ? '<div class="note"><p><strong>免責</strong></p><p>(テンプレートが末尾に免責を自動で付けます)</p></div>' : ""}</div></main></body></html>`;
+      ${md(adPreview(body, adTypes)).replace(/href="([a-z0-9-]+\.html)"/g, `href="${SITE}/${ch === "lab" ? "lab" : "articles"}/$1"`)}<div class="note"><p><strong>LINE で受け取る</strong></p><p>(テンプレートが記事のテーマに合わせて LINE の友だち追加の枠を入れます。content/line.yml で止めているあいだは出ません)</p></div>${ch === "lab" ? '<div class="note"><p><strong>免責</strong></p><p>(テンプレートが末尾に免責を自動で付けます)</p></div>' : ""}</div></main></body></html>`;
   } else {
     pv.srcdoc = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><base target="_blank">
       <style>body{max-width:680px;margin:24px auto;padding:0 16px;font-family:system-ui,sans-serif;line-height:1.8;color:#172231}</style></head>
@@ -1240,35 +1246,40 @@ async function queueView() {
     const done = new Set((files || []).map((f) => f.name.replace(/\.(ja\.md|md|html)$/, "")));
     const pending = queueBlocks(q.text).blocks.filter((b) => !done.has(b.slug));
     const owner = chans.find((c) => c.id === ch)?.ownerFields;
-    const missing = (b) => owner && !(b.fields.worked_on && b.fields.environment && b.fields.environment !== "[]");
-    $("#ql").innerHTML = `<h2>これから書く順(${pending.length}本)</h2>${owner ? '<p class="meta">作業した時期と動作確認した環境がそろったネタだけ書かれます。「記入する」から入れてください。</p>' : ""}<div class="card list">${pending.map((b, i) => `
+    const filled = (v) => v && v !== "[]";
+    const missing = (b) => owner && !(b.fields.worked_on && filled(b.fields.environment) && filled(b.fields.costs));
+    $("#ql").innerHTML = `<h2>これから書く順(${pending.length}本)</h2>${owner ? '<p class="meta">作業した時期・動作確認した環境・かかったお金がそろったネタだけ書かれます。「記入する」から入れてください。</p>' : ""}<div class="card list">${pending.map((b, i) => `
       <div class="item" style="cursor:default"><span class="count">${i + 1}</span><div class="main"><div class="t">${esc(b.fields.keyword || b.slug)}</div>
       <div class="m">${esc(b.fields.angle || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.refs.length ? " ・ " + refLinks(b.refs) : ""}${owner && !missing(b) ? " ・ 作業時期: " + esc(b.fields.worked_on) : ""}</div></div>
       ${owner ? `<button class="sub" data-fill="${esc(b.slug)}">${missing(b) ? "記入する" : "直す"}</button>` : ""}</div>`).join("") || '<p class="empty">ネタ帳は空です。</p>'}</div>`;
-    $("#ql").querySelectorAll("[data-fill]").forEach((el) => { el.onclick = () => go(() => fillOwner(ch, el.dataset.fill), "作業時期と環境"); });
+    $("#ql").querySelectorAll("[data-fill]").forEach((el) => { el.onclick = () => go(() => fillOwner(ch, el.dataset.fill), "作業時期・環境・お金"); });
   };
   $("#ch").onchange = show; await show();
 }
-// しろくまラボの「作業した時期」と「動作確認した環境」。AI には作らせず、オーナーが書いたものをそのまま記事に出す
+// しろくまラボの「作業した時期」「動作確認した環境」「かかったお金」。AI には作らせず、オーナーが書いたものをそのまま使う
 function ownerInput() {
-  const worked = $("#worked").value.trim(), env = $("#env").value.split("\n").map((x) => x.trim()).filter(Boolean);
-  if (!worked || !env.length) return { err: "作業した時期と、動作確認した環境を入れてください" };
-  const leak = secretHits([worked, ...env].join("\n"));
+  const lines = (id) => $(id).value.split("\n").map((x) => x.trim()).filter(Boolean);
+  const worked = $("#worked").value.trim(), env = lines("#env"), costs = lines("#costs");
+  if (!worked || !env.length || !costs.length) return { err: "作業した時期・動作確認した環境・かかったお金を入れてください" };
+  const all = [worked, ...env, ...costs].join("\n");
+  const leak = secretHits(all);
   if (leak.length) return { err: `書けない文字列があります: ${leak[0]}` };
-  if (/[—―]/.test(worked + env.join(""))) return { err: "エムダッシュは使えません" };
-  return { lines: [`    worked_on: ${yq(worked)}`, `    environment: ${JSON.stringify(env)}`] };
+  if (/[—―]/.test(all)) return { err: "エムダッシュは使えません" };
+  if (!costs.some((c) => /円/.test(c))) return { err: "かかったお金に、機材費などの金額(〇〇円)を1つは入れてください" };
+  return { lines: [`    worked_on: ${yq(worked)}`, `    environment: ${JSON.stringify(env)}`, `    costs: ${JSON.stringify(costs)}`] };
 }
 async function fillOwner(ch, slug) {
   const path = `channels/${ch}/queue.yml`;
   const q0 = await getFile(path);
   const b0 = queueBlocks(q0.text).blocks.find((b) => b.slug === slug);
   if (!b0) throw new Error("そのネタが見つかりませんでした");
-  let env0 = []; try { env0 = JSON.parse(b0.fields.environment || "[]"); } catch {}
+  let env0 = [], costs0 = []; try { env0 = JSON.parse(b0.fields.environment || "[]"); costs0 = JSON.parse(b0.fields.costs || "[]"); } catch {}
   view.innerHTML = `
   <div class="card pad stack" style="margin-top:16px">
-    <p class="meta">「${esc(b0.fields.keyword || slug)}」を書くのに使う情報です。記事の冒頭に、この時期と環境がそのまま出ます。AI は作りません。両方そろうまで、このネタは書かれません。</p>
+    <p class="meta">「${esc(b0.fields.keyword || slug)}」を書くのに使う情報です。記事の冒頭に時期と環境がそのまま出て、「かかったお金」の見出しはここに書いた金額だけで書かれます。AI は作りません。3つそろうまで、このネタは書かれません。</p>
     <label>作業した時期<input type="text" id="worked" placeholder="例:2025年5月" value="${esc(b0.fields.worked_on || "")}"></label>
     <label>動作確認した環境(1行に1つ。IP アドレスや名前は書かない)<textarea id="env" rows="4" placeholder="例:Raspberry Pi 4(8GB)&#10;Raspberry Pi OS Lite 64bit(bookworm)">${esc(env0.join("\n"))}</textarea></label>
+    <label>かかったお金(1行に1つ。買ったときの金額と時期、電気代を測ったならその値。分からないものは書かない)<textarea id="costs" rows="4" placeholder="例:Raspberry Pi 4(8GB):約12,000円(2023年購入)&#10;外付けHDD 4TB:約13,000円(2024年購入)&#10;消費電力:ワットチェッカーで実測 平均6W">${esc(costs0.join("\n"))}</textarea></label>
   </div>
   <div class="bar"><button class="act" id="save">保存する</button></div>`;
   $("#save").onclick = async () => {
@@ -1280,9 +1291,9 @@ async function fillOwner(ch, slug) {
       const { lines, blocks } = queueBlocks(q.text);
       const b = blocks.find((x) => x.slug === slug);
       if (!b) throw new Error("そのネタが見つかりませんでした");
-      const body = lines.slice(b.start, b.end + 1).filter((l) => !/^    (worked_on|environment):/.test(l));
+      const body = lines.slice(b.start, b.end + 1).filter((l) => !/^    (worked_on|environment|costs):/.test(l));
       lines.splice(b.start, b.end - b.start + 1, ...body, ...owner.lines);
-      await putFile(path, lines.join("\n").replace(/\n*$/, "\n"), q.sha, `ラボのネタに作業時期と環境を記入: ${slug}`);
+      await putFile(path, lines.join("\n").replace(/\n*$/, "\n"), q.sha, `ラボのネタに作業時期・環境・かかったお金を記入: ${slug}`);
       toast("保存しました"); history_.length ? $("#back").onclick() : home();
     } catch (e) { toast(e.message); $("#save").disabled = false; }
   };
@@ -1302,6 +1313,7 @@ async function addTopic() {
     <div id="ownerWrap" class="stack">
       <label>作業した時期(必須)<input type="text" id="worked" placeholder="例:2025年5月"></label>
       <label>動作確認した環境(必須。1行に1つ。IP アドレスや名前は書かない)<textarea id="env" rows="3" placeholder="例:Raspberry Pi 4(8GB)&#10;Raspberry Pi OS Lite 64bit(bookworm)"></textarea></label>
+      <label>かかったお金(必須。1行に1つ。買った時期と金額、測ったなら電気代)<textarea id="costs" rows="3" placeholder="例:Raspberry Pi 4(8GB):約12,000円(2023年購入)&#10;消費電力:ワットチェッカーで実測 平均6W"></textarea></label>
     </div>
     <label>順番<select id="pos"><option value="top">次に書かせる</option><option value="end">最後に並べる</option></select></label>
     <label>URL名(半角英小文字とハイフン、任意)<input type="text" id="slug" placeholder="空欄なら自動"></label>
