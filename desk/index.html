@@ -220,7 +220,10 @@ async function loadChannels() {
       const get = (k) => (y.match(new RegExp(`^${k}:\\s*(.+)$`, "m")) || [])[1]?.replace(/\s+#.*$/, "").trim();
       return { id: d.name, name: get("name") || d.name, enabled: get("enabled") === "true",
                types: /^types:/m.test(y), categories: /^categories:/m.test(y), twoStage: get("two_stage") === "true",
-               research: get("research") || "false", publish: get("publish") || "", ownerFields: /^owner_fields:/m.test(y), raw: y };
+               research: get("research") || "false", publish: get("publish") || "", ownerFields: /^owner_fields:/m.test(y),
+               // カテゴリの一覧(媒体ごと。note は学習寄り)と、有料候補を付ける媒体(schedule の paid_per_month)
+               cats: (y.match(/^categories:\s*\[(.*)\]/m)?.[1] || "").split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean),
+               paid: /paid_per_month:\s*[1-9]/.test(y), raw: y };
     } catch { return null; }
   }));
   channelsCache = list.filter(Boolean);
@@ -509,7 +512,9 @@ function withImages(html, imgs) {
   const fig = (id) => { const m = imgs[id]; if (!m) return null;
     return `<figure style="margin:20px 0${m.wait ? ";outline:3px dashed #d97706;outline-offset:4px" : ""}"><img src="${m.src}" alt="${esc(m.alt)}" style="width:100%;height:auto;display:block">`
       + `${m.wait ? `<figcaption style="font-size:13px;color:#b45309">${m.fig ? "図" : "写真"} ${id}: 確認待ち(上の「写真・図解」で承認)</figcaption>` : ""}</figure>`; };
-  return html.replace(/<p>\[\[photo:([pf]\d+)\]\]<\/p>/g, (all, id) => fig(id) || all)
+  return html.replace(/<p>\[\[有料ライン[:：]\s*([\s\S]*?)\]\]<\/p>/g, (all, why) =>  // 有料候補の境界線の案(note)
+      `<div style="margin:24px 0;padding:10px 12px;border-top:3px dashed #d97706;background:#fff7ed;color:#9a3412;font-size:14px">💰 有料ラインの案: ここから下を有料にする場合はこの位置で区切る(理由: ${why})</div>`)
+    .replace(/<p>\[\[photo:([pf]\d+)\]\]<\/p>/g, (all, id) => fig(id) || all)
     .replace(/<p><strong>【(?:写真|図) ([pf]\d+) をここに貼る】<\/strong>[^<]*<\/p>/g, (all, id) => fig(id) || all);
 }
 function figureBox(x, ctx) {
@@ -1144,6 +1149,8 @@ async function draft(n) {
   const warn = warningsFrom(latestReport);
   const closed = pr.state !== "open";
   const isSite = onSite(ch);
+  const paidCh = (channelsCache || []).find((c) => c.id === ch)?.paid;
+  const paidOn = String(meta.paid_candidate) === "true";
   const words = body.match(/[A-Za-z0-9][A-Za-z0-9'’.,%-]*/g)?.length || 0;
   const size = st === "en" ? `${words}語` : `${body.replace(/\s/g, "").length}字`;
   let primary = "";
@@ -1164,6 +1171,10 @@ async function draft(n) {
     ${lastCheck[n] ? checkPanel(lastCheck[n]) : ""}
     <div id="prcheck"></div>
     ${photoMan && photoMan.slots.length ? '<div id="photos"></div>' : ""}
+    ${paidCh && !closed ? `<div class="card pad stack"><div class="row" style="justify-content:space-between"><b>${paidOn ? "💰 有料候補" : "有料候補ではない"}</b>
+      <button class="sub" id="paidToggle">${paidOn ? "有料候補から外す" : "有料候補にする"}</button></div>
+      <div class="meta">${paidOn ? "公開イメージの「有料ラインの案」の位置で区切る想定です。有料にするか・価格は note で公開するときに決めてください。外すと、境界線の案を消して書き直します。"
+        : "有料候補にすると、有料の境界線の案を本文に入れて書き直します(月に1本が目安)。"}</div></div>` : ""}
     <div class="row" style="justify-content:space-between"><div class="meta">${esc(chName(ch))} ・ ${esc(STAGE_LABEL[st] || st)} ・ ${esc(meta.date || "")} ・ ${size}${pr.labels.some((l) => l.name === HUMAN_LABEL) ? " ・ 人が手直し済み" : ""}</div>
       ${closed || !canSelfEdit(ch, st) ? "" : '<button class="sub" id="edit">自分で直す</button>'}</div>
     ${thumbSrc ? `<div class="card pad stack"><div class="meta">${isSite ? "SNS で共有したときの画像(OGP)" : "見出し画像(サムネ)"}${meta.thumb_title ? ` ・ 「${esc(String(meta.thumb_title).replace(/\\n|\n/g, " / "))}」` : ""}</div>
@@ -1218,6 +1229,22 @@ async function draft(n) {
   if (closed) return;
   const ed = $("#edit");
   if (ed) ed.onclick = () => go(() => editBody(n), "自分で直す");
+  const pt = $("#paidToggle");
+  if (pt) twoTap(pt, paidOn ? "本当に外す" : "本当に有料候補にする", async () => {
+    // 下書きの front matter の paid_candidate を付け外しし(本社の office.py が書き直しでもこの値を守る)、ラベルと書き直しを頼む
+    const f = await getFile(mdPath, pr.head.ref);
+    const m = f.text.match(/^---\n([\s\S]*?)\n---\n/);
+    if (!m) throw new Error("front matter が見つかりません");
+    const fm = m[1].split("\n").filter((l) => !/^paid_candidate:/.test(l));
+    if (!paidOn) { const at = fm.findIndex((l) => l.startsWith("date:")); fm.splice(at < 0 ? fm.length : at, 0, "paid_candidate: true"); }
+    await putFile(mdPath, `---\n${fm.join("\n")}\n---\n` + f.text.slice(m[0].length), f.sha, paidOn ? "有料候補から外す(デスクから)" : "有料候補にする(デスクから)", pr.head.ref);
+    if (paidOn) await gh(`${R}/issues/${n}/labels/${encodeURIComponent("有料候補")}`, { method: "DELETE" }).catch(() => {});
+    else await gh(`${R}/issues/${n}/labels`, { method: "POST", body: JSON.stringify({ labels: ["有料候補"] }) });
+    const ask = paidOn ? "/revise 有料候補から外した。[[有料ライン: …]] の行を消す。ほかは変えない"
+      : "/revise 有料候補にした。有料の境界線の案 [[有料ライン: 理由]] を本文に1つ置く。無料部分で誰向けか・何が分かるか・結論の要点を見せ、具体的な手順や表は後ろ(有料側)に置く。必要なら段落の順番だけ入れ替え、内容は変えない";
+    await gh(`${R}/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body: ask + "\n\n(デスクから)" }) });
+    toast(paidOn ? "外しました。境界線の案を消して書き直します" : "有料候補にしました。境界線の案を入れて書き直します"); go(() => draft(n), current?.title || "下書き", false);
+  });
   const sps = $("#sbPlanSave");
   if (sps) sps.onclick = async () => {
     const v = $("#sbPlan").value;
@@ -1391,13 +1418,31 @@ async function queueView() {
     const done = new Set((files || []).map((f) => f.name.replace(/\.(ja\.md|md|html)$/, "")));
     const pending = queueBlocks(q.text).blocks.filter((b) => !done.has(b.slug));
     const owner = chans.find((c) => c.id === ch)?.ownerFields;
+    const paidCh = chans.find((c) => c.id === ch)?.paid;
     const filled = (v) => v && v !== "[]";
     const missing = (b) => owner && !(b.fields.worked_on && filled(b.fields.environment) && filled(b.fields.costs));
     $("#ql").innerHTML = `<h2>これから書く順(${pending.length}本)</h2>${owner ? '<p class="meta">作業した時期・動作確認した環境・かかったお金がそろったネタだけ書かれます。「記入する」から入れてください。</p>' : ""}<div class="card list">${pending.map((b, i) => `
       <div class="item" style="cursor:default"><span class="count">${i + 1}</span><div class="main"><div class="t">${esc(b.fields.keyword || b.slug)}</div>
-      <div class="m">${esc(b.fields.angle || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.refs.length ? " ・ " + refLinks(b.refs) : ""}${owner && !missing(b) ? " ・ 作業時期: " + esc(b.fields.worked_on) : ""}</div></div>
-      ${owner ? `<button class="sub" data-fill="${esc(b.slug)}">${missing(b) ? "記入する" : "直す"}</button>` : ""}</div>`).join("") || '<p class="empty">ネタ帳は空です。</p>'}</div>`;
+      <div class="m">${b.fields.paid === "true" ? '<span class="chip warnchip">💰 有料候補</span> ' : ""}${esc(b.fields.angle || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.fields.category ? " ・ " + esc(b.fields.category) : ""}${b.refs.length ? " ・ " + refLinks(b.refs) : ""}${owner && !missing(b) ? " ・ 作業時期: " + esc(b.fields.worked_on) : ""}</div></div>
+      ${owner ? `<button class="sub" data-fill="${esc(b.slug)}">${missing(b) ? "記入する" : "直す"}</button>` : ""}
+      ${paidCh ? `<button class="sub" data-paid="${esc(b.slug)}">${b.fields.paid === "true" ? "有料候補から外す" : "有料候補にする"}</button>` : ""}</div>`).join("") || '<p class="empty">ネタ帳は空です。</p>'}</div>
+      ${paidCh ? '<p class="meta">有料候補: 月に1本は、この印の付いたネタから先に書きます(印が無ければ AI が1本を候補にします)。有料にするか・価格は、下書きを見てから決めてください。</p>' : ""}`;
     $("#ql").querySelectorAll("[data-fill]").forEach((el) => { el.onclick = () => go(() => fillOwner(ch, el.dataset.fill), "作業時期・環境・お金"); });
+    $("#ql").querySelectorAll("[data-paid]").forEach((el) => { el.onclick = async () => {  // ネタ帳の paid: true を付け外しする
+      el.disabled = true;
+      try {
+        const path = `channels/${ch}/queue.yml`, q = await getFile(path);
+        const { lines, blocks } = queueBlocks(q.text);
+        const b = blocks.find((x) => x.slug === el.dataset.paid);
+        if (!b) throw new Error("そのネタが見つかりませんでした");
+        const on = b.fields.paid !== "true";
+        const body = lines.slice(b.start, b.end + 1).filter((l) => !/^    paid:/.test(l));
+        if (on) body.push("    paid: true");
+        lines.splice(b.start, b.end - b.start + 1, ...body);
+        await putFile(path, lines.join("\n").replace(/\n*$/, "\n"), q.sha, `${on ? "有料候補にする" : "有料候補から外す"}: ${b.slug}`);
+        toast(on ? "有料候補にしました" : "有料候補から外しました"); show();
+      } catch (e) { toast(e.message); el.disabled = false; }
+    }; });
   };
   $("#ch").onchange = show; await show();
 }
@@ -1453,7 +1498,8 @@ async function addTopic() {
     <label>この記事で使ってほしい体験(任意)<textarea id="notes"></textarea></label>
     <label>参考にした動画のURL(任意。1行に1つ。話題と切り口の参考にするだけで、中身はなぞらせない)<textarea id="refs" rows="2" placeholder="https://www.youtube.com/watch?v=..."></textarea></label>
     <label id="resWrap">税務・制度に触れるか<select id="res"><option value="">自動で判定</option><option value="true">触れる(一次情報で確認して出典を付ける)</option><option value="false">触れない</option></select></label>
-    <label id="catWrap">カテゴリ<select id="cat">${CATS.map((c) => `<option>${c}</option>`).join("")}</select></label>
+    <label id="catWrap">カテゴリ<select id="cat"></select></label>
+    <label id="paidWrap" class="row" style="gap:8px"><input type="checkbox" id="paid">有料候補にする(有料にするか・価格はあとで決める。月1本はこの印のネタから先に書く)</label>
     <label id="typeWrap">記事の型<select id="type"><option value="short">short(短記事)</option><option value="main">main(主記事)</option></select></label>
     <div id="ownerWrap" class="stack">
       <label>作業した時期(必須)<input type="text" id="worked" placeholder="例:2025年5月"></label>
@@ -1465,6 +1511,7 @@ async function addTopic() {
   </div>
   <div class="bar"><button class="act" id="add">ネタ帳に入れる</button></div>`;
   const sync = () => { const c = chans.find((x) => x.id === $("#ch").value) || {};
+    $("#cat").innerHTML = (c.cats?.length ? c.cats : CATS).map((x) => `<option>${esc(x)}</option>`).join(""); $("#paidWrap").hidden = !c.paid;
     $("#catWrap").hidden = !c.categories; $("#typeWrap").hidden = !c.types; $("#resWrap").hidden = c.research !== "auto"; $("#ownerWrap").hidden = !c.ownerFields; };
   $("#ch").onchange = sync; sync();
   $("#add").onclick = async () => {
@@ -1498,6 +1545,7 @@ async function addTopic() {
       if (c.research === "auto" && $("#res").value) block.push(`    research: ${$("#res").value}`);
       if (refs.length) block.push(`    reference_videos: ${JSON.stringify(refs)}`);
       if (owner) block.push(...owner.lines);
+      if (c.paid && $("#paid").checked) block.push("    paid: true");
       let lines = q.text.replace(/\n+$/, "").replace(/^topics:\s*\[\]\s*$/m, "topics:").split("\n");
       if ($("#pos").value === "top") {
         const at = lines.findIndex((l) => /^topics:/.test(l));
