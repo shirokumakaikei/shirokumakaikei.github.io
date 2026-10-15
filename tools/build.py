@@ -48,10 +48,10 @@ SHOP_HOSTS = {
 SHOP_LINK_REL = "nofollow sponsored noopener"
 # 記事の写真(本社の docs/photo-requirements.md)。本文の目印 [[photo:p1]] を、assets/photos/<articles|lab>/<slug>/p1.webp の figure にする。
 # alt と大きさは front matter の photos(本社の publish が書く)。画像はメタデータを消した WebP だけ
-PHOTO_RE = re.compile(r"^\[\[photo:(p\d+)\]\]\s*$", re.M)
+PHOTO_RE = re.compile(r"^\[\[photo:([pf]\d+)\]\]\s*$", re.M)  # p1 は写真、f1 は図解(本社の tools/figures.py が作った WebP)
 PHOTO_MAX_BYTES = 400_000
 # 写真ライブラリ(本社の tools/photo_library.py)で使い回した写真は、公開済みの画像をそのまま指す(front matter の photos の src)
-PHOTO_SRC_RE = re.compile(r"^assets/photos/(?:articles|lab)/[a-z0-9-]+/p\d+\.webp$")
+PHOTO_SRC_RE = re.compile(r"^assets/photos/(?:articles|lab)/[a-z0-9-]+/[pf]\d+\.webp$")
 WEBP_OK_CHUNKS = {b"VP8 ", b"VP8L", b"VP8X", b"ALPH", b"ANIM", b"ANMF"}
 
 # LINE 公式アカウントへの誘導(本社の docs/line-funnel.md)。content/line.yml の enabled が true で、媒体の友だち追加 URL があるときだけ、
@@ -408,7 +408,8 @@ def expand_photos(body_md: str, a: dict, section: str, prefix: str = "../") -> s
         src = prefix + (str(e["src"]) if e.get("src") and PHOTO_SRC_RE.match(str(e["src"]))
                         else f"assets/photos/{section}/{a['slug']}/{m.group(1)}.webp")
         alt = esc(str(e.get("alt", "")))
-        return (f'<figure class="article-photo"><img src="{src}" alt="{alt}" width="{int(e.get("width") or 0)}" '
+        cls = "article-photo article-figure" if m.group(1).startswith("f") else "article-photo"  # 図解は枠線なし(図の中に枠がある)
+        return (f'<figure class="{cls}"><img src="{src}" alt="{alt}" width="{int(e.get("width") or 0)}" '
                 f'height="{int(e.get("height") or 0)}" loading="lazy" decoding="async"></figure>')
     return PHOTO_RE.sub(rep, body_md)
 

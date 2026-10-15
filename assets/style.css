@@ -347,6 +347,7 @@ main code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospac
 /* 記事の写真(筆者が撮影。メタデータを消した WebP) */
 .article-photo { margin: 24px 0; }
 .article-photo img { display: block; width: 100%; max-width: 720px; height: auto; border-radius: 6px; border: 1px solid var(--rule); }
+.article-figure img { border: 0; border-radius: 0; }
 
 /* LINE 公式アカウントへの誘導(記事末尾。build.py の line_cta) */
 .line-cta {
