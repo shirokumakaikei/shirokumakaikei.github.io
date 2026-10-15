@@ -22,6 +22,22 @@
   background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .phcheck { margin: 6px 0; padding-left: 1.2em; }
 .chip.warnchip { background: #fff4e5; color: #8a4b00; }
+/* 見た目の確認: 見本の画像は横いっぱい。押すと全画面で開き、ピンチか「拡大」で細部を見る */
+.dsimgs { display: grid; gap: 12px; }
+.dsimg { margin: 0; display: grid; gap: 4px; }
+.dsimg button { padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; display: block; width: 100%; }
+.dsimg img { width: 100%; height: auto; display: block; min-height: 60px; }
+.dsimg figcaption { font-size: 0.82rem; color: var(--muted); }
+.dsopt { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: grid; gap: 10px; }
+.dsopt.sel { border-color: var(--act); box-shadow: 0 0 0 2px var(--act-soft); }
+.dsopt > label { display: flex; gap: 8px; align-items: center; font-size: 1rem; color: var(--fg); font-weight: 700; }
+.dsopt > label input { width: 20px; height: 20px; }
+.zoom { position: fixed; inset: 0; z-index: 20; background: #0a0e14; display: flex; flex-direction: column; }
+.zoom .zbar { display: flex; gap: 8px; padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 8px; align-items: center; color: #fff; }
+.zoom .zbar .zt { flex: 1; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zoom .zbody { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y pinch-zoom; }
+.zoom img { display: block; width: 100%; height: auto; background: #fff; }
+.zoom.big img { width: 250%; max-width: none; }
 /* スマホ1列。上から「要対応 → AI社員の稼働 → 方向を決める」。あなたが押すボタンだけオレンジ */
 :root {
   --bg: #f4f7fa; --card: #ffffff; --fg: #172231; --muted: #5a6a7e; --line: #d5dde7;
@@ -291,7 +307,7 @@ async function settings() {
 // ---------- 受信箱 ----------
 async function inbox() {
   if (!token) return settings();
-  const [pulls, ops, reports, runs, siteRuns, chans, watch] = await Promise.all([
+  const [pulls, ops, reports, runs, siteRuns, chans, watch, design] = await Promise.all([
     gh(`${R}/pulls?state=open&per_page=50`),
     gh(`${R}/issues?labels=ops&state=open&per_page=5`),
     gh(`${R}/issues?labels=analyst-report&state=all&per_page=1`),
@@ -299,6 +315,7 @@ async function inbox() {
     gh(`/repos/${SITE_REPO}/actions/runs?per_page=10`).catch(() => ({ workflow_runs: [] })),
     loadChannels().catch(() => []),
     getFile("shared/publish-watch.json").then((f) => JSON.parse(f.text)).catch(() => null),  // 公開の自動検知(本社の tools/publish_watch.py)
+    dsLoad().catch(() => null),  // 見た目の確認(本社の tools/design_review.py)
   ]);
   const has = (p, l) => p.labels.some((x) => x.name === l);
   const todo = [
@@ -314,6 +331,8 @@ async function inbox() {
       m: `予定日 ${x.planned_date} を過ぎても公開を検知できていません`,
       open: () => (x.pr && pulls.some((p) => p.number === x.pr)) ? go(() => draft(x.pr), "英語版")
         : toast(`公開したなら、${x.channel === "note" ? "note" : "Substack"}の RSS に出るまで少し待つか、デスクの「投稿済みにする」で記録してください`) })),
+    ...(dsPending(design).length ? [{ kind: "draft", chip: `見た目の確認・${dsPending(design).length}件`,
+      t: dsPending(design).map((x) => x.title).join("、"), m: "見本の画像を見て決める", open: () => go(designView, "見た目の確認") }] : []),
     ...ops.map((i) => ({ kind: "ops", chip: "運用", t: i.title, m: `${ago(i.updated_at)} / コメント${i.comments}件`,
       open: () => go(() => opsView(i.number), "運用のお知らせ") })),
   ];
@@ -342,6 +361,7 @@ async function inbox() {
   <h2>方向を決める</h2>
   <div class="card list">
     <button class="item" id="addTopic"><div class="main"><div class="t">ネタを追加する</div><div class="m">媒体を選んで、次に書かせるテーマを入れる</div></div>›</button>
+    <button class="item" id="design"><div class="main"><div class="t">見た目の確認${dsPending(design).length ? ` <span class="count">${dsPending(design).length}</span>` : ""}</div><div class="m">図解・サムネなどの見た目を、見本の画像で決める</div></div>›</button>
     <button class="item" id="queue"><div class="main"><div class="t">ネタ帳を見る</div><div class="m">媒体ごとの、これから書く順番</div></div>›</button>
     <button class="item" id="ytch"><div class="main"><div class="t">参考チャンネル</div><div class="m">編集長が週1で見る YouTube チャンネルの追加・削除・ジャンル分け</div></div>›</button>
     <button class="item" id="addExp"><div class="main"><div class="t">体験を追加する</div><div class="m">全媒体で使える実体験を足す</div></div>›</button>
@@ -367,6 +387,7 @@ async function inbox() {
   }));
   $("#addTopic").onclick = () => go(addTopic, "ネタを追加");
   $("#queue").onclick = () => go(queueView, "ネタ帳");
+  $("#design").onclick = () => go(designView, "見た目の確認");
   $("#addExp").onclick = () => go(addExperience, "体験を追加");
   $("#addPractice").onclick = () => go(addPractice, "実務メモを足す");
   $("#hearsay").onclick = () => go(hearsayView, "伝聞メモ");
@@ -709,6 +730,122 @@ function renderPhotos(el, ctx) {
     zip.disabled = false;
   };
 }
+
+// ---------- 見た目の確認(本社の shared/design-reviews.json。決めた内容は design-review.yml が設定に入れる) ----------
+const DS_PATH = "shared/design-reviews.json";
+const DS_STATUS = { pending: "判断待ち", decided: "決めた", change_requested: "直してほしい(依頼中)" };
+const dsPending = (d) => ((d && d.items) || []).filter((x) => (x.status || "pending") === "pending");
+async function dsLoad() {
+  try { return JSON.parse((await getFile(DS_PATH)).text); }
+  catch (e) { if (/404/.test(e.message)) return { version: 1, items: [] }; throw e; }
+}
+async function dsUpdate(fn, msg) {  // 同時に更新されたら取り直してやり直す(写真ライブラリと同じ)
+  for (let i = 0; i < 3; i++) {
+    const f = await getFile(DS_PATH);
+    const d = JSON.parse(f.text);
+    fn(d);
+    try { await putFile(DS_PATH, JSON.stringify(d, null, 1) + "\n", f.sha, msg); return d; }
+    catch (e) { if (!/409|422|sha|match/i.test(e.message) || i === 2) throw e; }
+  }
+}
+const dsImgs = {};
+function dsImg(path) {  // 見本の画像は非公開の本社の main から読む(下書きの画像と同じ contents API。1MB を超えたら blob で)
+  if (!dsImgs[path]) dsImgs[path] = gh(`${R}/contents/${path}?ref=main`).then(async (j) => {
+    const b64 = (j.content || (await gh(`${R}/git/blobs/${j.sha}`)).content).replace(/\n/g, "");
+    const mime = /\.svg$/i.test(path) ? "image/svg+xml" : /\.png$/i.test(path) ? "image/png" : /\.webp$/i.test(path) ? "image/webp" : "image/jpeg";
+    return `data:${mime};base64,${b64}`;
+  }).catch((e) => { delete dsImgs[path]; throw e; });
+  return dsImgs[path];
+}
+function zoomImage(src, caption) {
+  const z = document.createElement("div"); z.className = "zoom"; z.setAttribute("role", "dialog");
+  z.innerHTML = `<div class="zbar"><span class="zt">${esc(caption || "")}</span><button class="sub" data-z="big">拡大</button><button class="sub" data-z="close">閉じる</button></div>
+    <div class="zbody"><img alt="${esc(caption || "")}"></div>`;
+  z.querySelector("img").src = src;
+  z.querySelector('[data-z="big"]').onclick = (e) => { z.classList.toggle("big"); e.target.textContent = z.classList.contains("big") ? "縮小" : "拡大"; };
+  z.querySelector('[data-z="close"]').onclick = () => z.remove();
+  document.body.appendChild(z);
+}
+function dsImages(o) {
+  return `<div class="dsimgs">${(o.images || []).map((im) => `<figure class="dsimg"><button type="button" data-ds-img="${esc(im.path)}" data-cap="${esc(im.caption || "")}" aria-label="${esc(im.caption || "見本")}を大きく見る"><img alt="${esc(im.caption || "")}"></button>
+    <figcaption>${esc(im.caption || "")}(押すと大きく見られます)</figcaption></figure>`).join("")}</div>`;
+}
+function dsFill(el) {
+  el.querySelectorAll("[data-ds-img]").forEach(async (b) => {
+    const img = b.querySelector("img");
+    try { img.src = await dsImg(b.dataset.dsImg); b.onclick = () => zoomImage(img.src, b.dataset.cap); }
+    catch { b.replaceWith(Object.assign(document.createElement("p"), { className: "empty", textContent: `画像を読み込めません(${b.dataset.dsImg})` })); }
+  });
+}
+function dsDone(x) {
+  const d = x.decision || {}, o = (x.options || []).find((y) => y.id === d.option);
+  if (x.status === "decided") return `${o ? `「${o.label}」に決めました` : "決めました"}${x.applied_at ? "(設定に反映済み)" : "(数分で設定に反映されます)"}`;
+  if (x.status === "change_requested") return `直してほしい点を Claude Code に依頼しました${x.issue ? `(Issue #${x.issue})` : ""}: ${d.comment || ""}`;
+  return "";
+}
+function dsCard(x) {
+  const opts = x.options || [];
+  const head = `<div><div style="font-weight:700;font-size:1.05rem">${esc(x.title)}</div><div class="meta">${esc(x.added || "")}${x.pr ? ` ・ ${esc(x.pr)}` : ""}</div></div>
+    <p style="margin:0">${esc(x.question)}</p>`;
+  if (opts.length >= 2) return `<div class="card pad stack" data-ds="${esc(x.id)}">${head}
+    ${opts.map((o) => `<div class="dsopt" data-opt="${esc(o.id)}"><label><input type="radio" name="ds-${esc(x.id)}" value="${esc(o.id)}">${esc(o.label)}</label>
+      ${o.note ? `<div class="meta">${esc(o.note)}</div>` : ""}${dsImages(o)}</div>`).join("")}
+    <button class="act" data-pick disabled style="width:100%;min-height:48px">案を選んでください</button></div>`;
+  return `<div class="card pad stack" data-ds="${esc(x.id)}">${head}
+    ${opts.map((o) => `<div class="dsopt"><div style="font-weight:700">${esc(o.label)}</div>${o.note ? `<div class="meta">${esc(o.note)}</div>` : ""}${dsImages(o)}</div>`).join("")}
+    <div class="row"><button class="act" data-ok style="flex:1;min-height:48px">これでよい</button><button class="sub" data-fix style="flex:1;min-height:48px">直してほしい</button></div>
+    <div class="stack" data-fixbox hidden><label>直してほしい点(Claude Code への依頼になります)<textarea data-comment placeholder="例: 矢印をもう少し太く。比較表の見出しの紺を明るく"></textarea></label>
+      <button class="act" data-send style="min-height:48px">この内容で依頼する</button></div></div>`;
+}
+async function designView() {
+  const d = await dsLoad();
+  const items = d.items || [];
+  const wait = dsPending(d), rest = items.filter((x) => !wait.includes(x)).reverse();
+  view.innerHTML = `<div class="stack" style="margin-top:16px">
+    <p class="meta">図解やサムネなど、見た目の判断が要るものを見本の画像で決めます。画像を押すと全画面で開き、指で広げるか「拡大」で細かいところまで見られます。決めた内容は数分で設定に入り、これから作る記事に使われます。</p>
+    <h2 style="margin:8px 0 0">判断待ち <span class="count" id="dsCount">${wait.length}</span></h2>
+    ${wait.length ? wait.map(dsCard).join("") : '<div class="card"><p class="empty">いま判断待ちの見た目はありません。</p></div>'}
+    ${rest.length ? `<h2 style="margin:8px 0 0">決めたもの・依頼中</h2><div class="card list" id="dsDone">${rest.map((x) => `<div class="item" style="cursor:default"><div class="main">
+      <span class="chip ${x.status === "decided" ? "ok" : "warn"}">${esc(DS_STATUS[x.status] || x.status)}</span><div class="t">${esc(x.title)}</div><div class="m">${esc(dsDone(x))}</div></div></div>`).join("")}</div>` : ""}
+  </div>`;
+  dsFill(view);
+  const save = (id, decision, status, msg) => dsUpdate((dd) => {
+    const it = (dd.items || []).find((y) => y.id === id);
+    if (!it) throw new Error("項目が見つかりません(更新してください)");
+    if ((it.status || "pending") !== "pending") throw new Error("この項目はもう決まっています(更新してください)");
+    Object.assign(it, { status, decision: { ...decision, at: new Date().toISOString() } }); delete it.applied_at;
+  }, msg);
+  const after = (m) => { toast(m); go(designView, "見た目の確認", false); };
+  view.querySelectorAll("[data-ds]").forEach((card) => {
+    const id = card.dataset.ds, x = items.find((y) => y.id === id);
+    const pick = card.querySelector("[data-pick]");
+    if (pick) {
+      card.querySelectorAll("input[type=radio]").forEach((r) => { r.onchange = () => {
+        card.querySelectorAll(".dsopt").forEach((o) => o.classList.toggle("sel", o.dataset.opt === r.value));
+        pick.disabled = false; pick.textContent = `「${x.options.find((y) => y.id === r.value).label}」にする`; }; });
+      twoTap(pick, "これにする(決定)", async () => {
+        const v = card.querySelector("input[type=radio]:checked")?.value; if (!v) return;
+        await save(id, { option: v }, "decided", `見た目の確認: ${x.title} を「${x.options.find((y) => y.id === v).label}」に決めた`);
+        after("決めました。数分で設定に入ります");
+      });
+      return;
+    }
+    twoTap(card.querySelector("[data-ok]"), "これでよい(決定)", async () => {
+      await save(id, { option: x.options[0].id }, "decided", `見た目の確認: ${x.title} はこれでよい`);
+      after("決めました。数分で設定に入ります");
+    });
+    card.querySelector("[data-fix]").onclick = () => { card.querySelector("[data-fixbox]").hidden = false; card.querySelector("[data-comment]").focus(); };
+    card.querySelector("[data-send]").onclick = async (e) => {
+      const c = card.querySelector("[data-comment]").value.trim();
+      if (!c) return toast("直してほしい点を書いてください");
+      e.target.disabled = true;
+      try { await save(id, { option: x.options[0].id, comment: c }, "change_requested", `見た目の確認: ${x.title} の修正を依頼`); }
+      catch (err) { e.target.disabled = false; return toast(err.message); }
+      after("依頼しました。Claude Code が直して、もう一度ここに出します");
+    };
+  });
+}
+
 
 // ---------- 写真ライブラリ(本社の shared/photo-library.json と library/。非公開) ----------
 // 加工済み(メタデータ無し)の写真だけを置く。写り込みチェックが済んでいない写真と古い印の写真は、記事の候補に出さない
