@@ -22,6 +22,7 @@ category_theme:
   キャリア・転職: career
   試験・学習: shikaku
   実務: dx
+  経理の基礎: dx      # note(学習寄り)のカテゴリ
 
 # テーマごとの文面。tag は LINE のアンケートで選ぶタグ(4つ)と同じ名前にする
 # gift は友だち追加の特典。実物ができて LINE から渡せるようになったら gift_ready: true にする(それまでは枠に出さない)
