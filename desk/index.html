@@ -288,13 +288,14 @@ async function settings() {
 // ---------- 受信箱 ----------
 async function inbox() {
   if (!token) return settings();
-  const [pulls, ops, reports, runs, siteRuns, chans] = await Promise.all([
+  const [pulls, ops, reports, runs, siteRuns, chans, watch] = await Promise.all([
     gh(`${R}/pulls?state=open&per_page=50`),
     gh(`${R}/issues?labels=ops&state=open&per_page=5`),
     gh(`${R}/issues?labels=analyst-report&state=all&per_page=1`),
     gh(`${R}/actions/runs?per_page=40`).catch(() => ({ workflow_runs: [] })),
     gh(`/repos/${SITE_REPO}/actions/runs?per_page=10`).catch(() => ({ workflow_runs: [] })),
     loadChannels().catch(() => []),
+    getFile("shared/publish-watch.json").then((f) => JSON.parse(f.text)).catch(() => null),  // 公開の自動検知(本社の tools/publish_watch.py)
   ]);
   const has = (p, l) => p.labels.some((x) => x.name === l);
   const todo = [
@@ -306,6 +307,10 @@ async function inbox() {
     }),
     ...pulls.filter((p) => has(p, "editor")).map((p) => ({ kind: "editor", chip: `編集長・${chName(labelOf(p, "channel:"))}`,
       t: p.title.replace(/^\[編集長\]\s*/, ""), m: ago(p.created_at), open: () => go(() => proposal(p.number), "ネタの提案") })),
+    ...((watch && watch.overdue) || []).map((x) => ({ kind: "ops", chip: `${chName(x.channel)}・公開されていません`, t: x.title,
+      m: `予定日 ${x.planned_date} を過ぎても公開を検知できていません`,
+      open: () => (x.pr && pulls.some((p) => p.number === x.pr)) ? go(() => draft(x.pr), "英語版")
+        : toast(`公開したなら、${x.channel === "note" ? "note" : "Substack"}の RSS に出るまで少し待つか、デスクの「投稿済みにする」で記録してください`) })),
     ...ops.map((i) => ({ kind: "ops", chip: "運用", t: i.title, m: `${ago(i.updated_at)} / コメント${i.comments}件`,
       open: () => go(() => opsView(i.number), "運用のお知らせ") })),
   ];
@@ -792,6 +797,13 @@ async function draftCtx(n) {
 }
 // 自分で直せる下書き: しろくま会計・しろくまラボ・note、Inside Japan Tax は日本語版(stage:ja)だけ
 const canSelfEdit = (ch, st) => ch === "site" || ch === "lab" || ch === "note" || (ch === "substack" && st === "ja");
+// Substack の公開予定日。meta の planned_date、無ければ下書きができた日(日本時間)の翌日(本社の publish_watch.planned と同じ)
+function sbPlanned(m) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(m?.planned_date || "")) return m.planned_date;
+  if (!m?.drafted_at) return "";
+  const d = new Date(new Date(m.drafted_at).getTime() + 9 * 3600e3 + 24 * 3600e3);
+  return d.toISOString().slice(0, 10);
+}
 // 公開サイトに載る媒体(承認=公開)。しろくまラボは /lab/ に載る
 const onSite = (ch) => ch === "site" || ch === "lab";
 // 公開してはいけない文字列(公開リポジトリの tools/secret_scan.py の簡易版)。しろくまラボの手直しで見る
@@ -1061,8 +1073,12 @@ async function draft(n) {
       <img src="${thumbSrc}" alt="${isSite ? "OGP 画像" : "見出し画像"}のプレビュー" style="width:100%;height:auto;border-radius:6px;border:1px solid var(--line)">
       <div class="meta">${outbox ? "承認すると、記事と一緒に note 登録待ちに置かれ、PC の下書き登録で見出し画像として設定されます。" : isSite ? "公開すると、記事と一緒にサイトに置かれ、X や LINE で共有したときにこの画像が出ます。" : ""}</div></div>`
       : (meta.thumb_title ? '<div class="warn">サムネ(見出し画像)がまだできていません。報告の「⚠」を確認してください。</div>' : "")}
-    ${ch === "substack" && st === "en" ? `<div class="card pad stack"><b>Substack の下書き</b>${sbMeta?.drafted_at
-      ? `<div class="meta">サーバーPC が下書きを作りました(${esc(when(sbMeta.drafted_at))})。公開はしていません。中身を確かめて Substack で公開したら、下の「投稿済みにする」を押してください。</div>${sbMeta.draft_url ? `<a href="${esc(sbMeta.draft_url)}" target="_blank" rel="noopener">Substack で下書きを開く</a>` : ""}`
+    ${ch === "substack" && st === "en" ? `<div class="card pad stack"><b>Substack の下書き</b>${sbMeta?.published_url
+      ? `<div class="meta">公開を検知しました(${esc(when(sbMeta.published_at))})。自動で投稿済みになります。</div><a href="${esc(sbMeta.published_url)}" target="_blank" rel="noopener">公開した記事を開く</a>`
+      : sbMeta?.drafted_at
+      ? `<div class="meta">サーバーPC が下書きを作りました(${esc(when(sbMeta.drafted_at))})。公開はしていません。中身を確かめて Substack で公開すると、RSS で自動で見つけて投稿済みにします(押さなくてよい)。見つからないときだけ、下の「投稿済みにする」を押してください。</div>${sbMeta.draft_url ? `<a href="${esc(sbMeta.draft_url)}" target="_blank" rel="noopener">Substack で下書きを開く</a>` : ""}
+        <label>公開予定日(この日は30分ごとに公開を確かめ、過ぎても見つからなければ「要対応」に出します)<input type="date" id="sbPlan" value="${esc(sbPlanned(sbMeta))}"></label>
+        <button class="sub" id="sbPlanSave">公開予定日を保存</button>`
       : `<div class="meta">${sbMeta ? "下書き待ちです。毎朝 6 時すぎにサーバーPC が Substack に下書きを作ります(1回2本まで)。" : "毎朝 5 時すぎに下書き待ちに入り、6 時すぎにサーバーPC が Substack に下書きを作ります。"}急ぐときは、下の「HTMLをコピー」で手で貼っても構いません。</div>`}</div>` : ""}
     ${!isSite && !outbox && st !== "ja" ? `<div class="row"><button class="sub" id="copy">${htmlFile ? "HTMLをコピー" : "本文をコピー"}</button><span class="meta">コピーして投稿画面に貼り付け、投稿し終えたら「投稿済みにする」</span></div>` : ""}
     <iframe class="preview" id="pv" title="公開イメージ"></iframe>
@@ -1105,6 +1121,19 @@ async function draft(n) {
   if (closed) return;
   const ed = $("#edit");
   if (ed) ed.onclick = () => go(() => editBody(n), "自分で直す");
+  const sps = $("#sbPlanSave");
+  if (sps) sps.onclick = async () => {
+    const v = $("#sbPlan").value;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return toast("日付を選んでください");
+    sps.disabled = true;
+    try {
+      const path = `outbox/substack/${slug}/meta.json`, f = await getFile(path);
+      const m = JSON.parse(f.text); m.planned_date = v;
+      await putFile(path, JSON.stringify(m, null, 1) + "\n", f.sha, `Substack の公開予定日: ${slug} ${v}`);
+      toast("保存しました");
+    } catch (e) { toast(e.message); }
+    sps.disabled = false;
+  };
   const ok = $("#ownerOk");
   if (ok) twoTap(ok, "本当に確認した", async () => {
     await gh(`${R}/issues/${n}/labels/${encodeURIComponent(OWNER_LABEL)}`, { method: "DELETE" });
