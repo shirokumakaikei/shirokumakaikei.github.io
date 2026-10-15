@@ -43,3 +43,27 @@ ads:
       <a href="https://px.a8.net/svt/ejp?a8mat=4B7QWX+XXR16+3Y6M+64Z8X" rel="nofollow">
       <img border="0" width="100" height="100" alt="" src="https://www25.a8.net/svt/bgt?aid=260701953057&wid=002&eno=01&mid=s00000018427001031000&mc=1"></a>
       <img border="0" width="1" height="1" src="https://www13.a8.net/0.gif?a8mat=4B7QWX+XXR16+3Y6M+64Z8X" alt="">
+  casio-nd26s:
+    active: true
+    type: product
+    name: "プロ用実務電卓(ソフトケース付)(日本電卓技能検定協会推奨電卓、簿記検定推奨品)"
+    caption: "簿記検定・税理士試験で使える実務電卓。たたく音が静か"
+    amazon_url: "https://link.amazon/B07hINEng"
+  raspi4-kit:
+    active: true
+    type: product
+    name: "Raspberry Pi 4 キット"
+    caption: "Raspberry Pi 4 本体と周辺品のセット。これだけで NAS や VPN の土台になる"
+    amazon_url: "https://link.amazon/B08OVlTgV"
+  raspi-ups-v3:
+    active: true
+    type: product
+    name: "Raspberry Pi UPS拡張ボード"
+    caption: "Raspberry Pi 用のバッテリー付き拡張ボード。停電時の予備電源に"
+    amazon_url: "https://link.amazon/B08bhYwjo"
+  seagate-expansion-4tb:
+    active: true
+    type: product
+    name: "Seagate Expansion 4TB"
+    caption: "据え置き型の外付けHDD 4TB。Raspberry Pi につないで NAS に"
+    amazon_url: "https://link.amazon/B0f8KwRUV"
