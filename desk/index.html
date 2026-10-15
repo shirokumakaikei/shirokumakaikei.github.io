@@ -432,9 +432,18 @@ function changedLines(before, after) {
 // 撮影指示(drafts/<媒体>/<slug>.photos.json)の枠ごとに、オーナーが写真をアップロードするか、スキップする。
 // 写真はこの端末で長辺 2048px の JPEG に描き直してから(撮影場所・機種・日時などの EXIF はここで落ちる)、
 // 下書きのブランチの <slug>.photos/incoming/ に置く。本社の Actions(photos.yml)がもう一度メタデータを全部消して WebP にし、incoming は消す。
-const PHOTO_DONE = ["uploaded", "skipped"];
+const PHOTO_DONE = ["uploaded", "skipped", "approved"];
 const PHOTO_STATUS = { pending: "撮影待ち", processing: "処理中(数分かかります)", needs_review: "AI が写り込みを指摘(確認待ち)",
-                       uploaded: "アップロード済み", skipped: "スキップ" };
+                       uploaded: "アップロード済み", skipped: "スキップ", review: "確認待ち", approved: "承認済み", failed: "作れなかった",
+                       stale: "日本語の図を直したので作り直し待ち" };
+// 図解(本社の tools/figures.py)。写真と同じ枠(kind: figure)。英語版の段階(Inside Japan Tax)は英語の図(x.en)を見る
+const figCur = (x, st) => (st === "en" && x.needs_en ? x.en || null : x);
+function slotWaiting(x, st) {
+  if (x.kind !== "figure") return !PHOTO_DONE.includes(x.status);
+  if (x.status === "skipped") return false;
+  if (!PHOTO_DONE.includes(x.status)) return true;
+  return st === "en" && x.needs_en && x.en?.status !== "approved";
+}
 const PHOTO_CHECKLIST = [
   "IP アドレス・ホスト名・ユーザー名・メールアドレスが出ている画面",
   "Tailscale の画面(マシン名・tailnet 名)",
@@ -482,21 +491,102 @@ async function updatePhotos(ctx, fn, msg) {
 const photoRef = (ctx, file) => (String(file).startsWith("library/") ? "main" : ctx.ref);
 async function photoDataUrl(ctx, file) {
   const j = await gh(`${R}/contents/${file}?ref=${encodeURIComponent(photoRef(ctx, file))}`);
-  return `data:image/webp;base64,${j.content.replace(/\n/g, "")}`;
+  const mime = /\.svg$/.test(file) ? "image/svg+xml" : /\.png$/.test(file) ? "image/png" : "image/webp";
+  return `data:${mime};base64,${j.content.replace(/\n/g, "")}`;
+}
+// 公開イメージ(本文のプレビュー)に、写真・図解を目印の位置で入れる。目印は [[photo:f1]](md)か「【図 f1 をここに貼る】」(英語版の HTML)
+async function previewImages(ctx, man, st) {
+  const out = {};
+  await Promise.all((man?.slots || []).map(async (x) => {
+    const cur = x.kind === "figure" ? figCur(x, st) : x;
+    if (!cur?.file || x.status === "skipped" || (x.kind !== "figure" && x.status !== "uploaded")) return;
+    try { out[x.id] = { src: await photoDataUrl(ctx, cur.file), alt: cur.spec?.alt || x.alt || "", fig: x.kind === "figure",
+                        wait: slotWaiting(x, st) }; } catch {}
+  }));
+  return out;
+}
+function withImages(html, imgs) {
+  const fig = (id) => { const m = imgs[id]; if (!m) return null;
+    return `<figure style="margin:20px 0${m.wait ? ";outline:3px dashed #d97706;outline-offset:4px" : ""}"><img src="${m.src}" alt="${esc(m.alt)}" style="width:100%;height:auto;display:block">`
+      + `${m.wait ? `<figcaption style="font-size:13px;color:#b45309">${m.fig ? "図" : "写真"} ${id}: 確認待ち(上の「写真・図解」で承認)</figcaption>` : ""}</figure>`; };
+  return html.replace(/<p>\[\[photo:([pf]\d+)\]\]<\/p>/g, (all, id) => fig(id) || all)
+    .replace(/<p><strong>【(?:写真|図) ([pf]\d+) をここに貼る】<\/strong>[^<]*<\/p>/g, (all, id) => fig(id) || all);
+}
+function figureBox(x, ctx) {
+  const cur = figCur(x, ctx.st);
+  const st = cur ? (cur === x ? x.status : cur.status) : "stale";
+  const en = ctx.st === "en" && x.needs_en;
+  return `<div class="phslot fgslot" data-id="${esc(x.id)}">
+    <div class="row" style="justify-content:space-between"><b>${esc(x.id)} 図解${en ? "(英語版)" : ""}</b>
+      <span class="chip ${st === "approved" ? "ok" : st === "skipped" || x.status === "skipped" ? "idle" : "warnchip"}">${esc(x.status === "skipped" ? PHOTO_STATUS.skipped : PHOTO_STATUS[st] || st)}</span></div>
+    <div class="meta">${esc(x.instruction || "")}</div>
+    ${cur?.file && x.status !== "skipped" ? `<img class="phprev" data-file="${esc(cur.file)}" alt="${esc(cur.spec?.alt || x.alt || "")}" style="background:#fff">` : ""}
+    ${en && x.file ? `<details><summary class="meta">承認済みの日本語の図を見る</summary><img class="phprev" data-file="${esc(x.file)}" alt="日本語の図" style="background:#fff"></details>` : ""}
+    ${x.error ? `<div class="warn">${esc(x.error)}</div>` : ""}
+    ${cur?.render_note ? `<div class="warn">${esc(cur.render_note)}</div>` : ""}
+    ${cur?.overflow?.length ? `<div class="warn">枠に収まらない文字があります(${esc(cur.overflow.join(", "))})。修正を頼んで短くしてください</div>` : ""}
+    ${x.candidates?.length ? `<div class="meta">📚 ライブラリに似た図が ${x.candidates.length} 枚あり、いちばん近い図を参考にして作りました</div>` : ""}
+    ${(x.history || []).length > 1 ? `<details><summary class="meta">直した履歴(${x.history.length - 1}回)</summary><ul class="meta">${x.history.slice(1).map((h) => `<li>${esc(when(h.at))} ${h.by === "owner" ? "あなたの依頼" : "校閲の指摘"}: ${esc(h.note)}</li>`).join("")}</ul></details>` : ""}
+    ${ctx.closed ? "" : `<div class="stack">
+      <div class="meta">本文の下の「公開イメージ」で、本文と一緒に確かめてください。数字・条件・順序が本文と同じか、本文に無いことを言っていないか、言い切りすぎていないか。</div>
+      <div class="row" style="flex-wrap:wrap;gap:8px">
+        ${x.status === "skipped" ? `<button class="sub fgunskip">「使わない」を取り消す</button>`
+          : `${cur && st !== "approved" && st !== "stale" && st !== "failed" ? `<button class="act fgok">この図でよい(承認)</button>` : ""}
+             ${en && (!x.en || x.en.status === "stale") ? `<button class="act fgmake">英語版を作る</button>` : ""}
+             <button class="sub fgskip">この図は使わない</button>`}
+      </div>
+      ${x.status === "skipped" ? "" : `<textarea class="fgReq" placeholder="図への直してほしいこと(例: 2段目と3段目を入れ替える、${en ? "英語を短く" : "表の列を「期限」「届出」にする"})"></textarea>
+      <button class="sub fgfix">図の修正を頼む</button>`}</div>`}
+  </div>`;
+}
+function bindFigure(box, ctx, again) {
+  const id = box.dataset.id;
+  const en = ctx.st === "en";
+  const save = (btn, fn, msg) => async () => {
+    if (btn) btn.disabled = true;
+    try { await updatePhotos(ctx, (m) => { const x = m.slots.find((y) => y.id === id); fn(x); x.updated = new Date().toISOString(); }, msg); again(); }
+    catch (e) { toast(e.message); if (btn) btn.disabled = false; }
+  };
+  const ok = box.querySelector(".fgok");
+  if (ok) ok.onclick = save(ok, (x) => { if (en && x.needs_en) x.en.status = "approved"; else x.status = "approved"; },
+    `図解を承認: ${id}${en ? "(英語版)" : ""}`);
+  const sk = box.querySelector(".fgskip"); if (sk) sk.onclick = save(sk, (x) => { x.status = "skipped"; }, `図解を使わない: ${id}`);
+  const us = box.querySelector(".fgunskip"); if (us) us.onclick = save(us, (x) => { x.status = "review"; }, `図解の「使わない」を取り消す: ${id}`);
+  const ask = async (btn, text) => {
+    btn.disabled = true;
+    try {
+      await gh(`${R}/issues/${ctx.n}/comments`, { method: "POST", body: JSON.stringify({ body: `/figure ${id} ${text}\n\n(デスクから)` }) });
+      toast("頼みました。数分で図が直り、もう一度確認できるようになります");
+    } catch (e) { toast(e.message); }
+    btn.disabled = false;
+  };
+  const mk = box.querySelector(".fgmake"); if (mk) mk.onclick = () => ask(mk, "");
+  const fx = box.querySelector(".fgfix");
+  if (fx) fx.onclick = () => {
+    const t = box.querySelector(".fgReq").value.trim();
+    if (!t) return toast("直してほしいことを書いてください");
+    if (/[—―]/.test(t)) return toast("エムダッシュは使えません");
+    ask(fx, t.replace(/\n+/g, " "));
+  };
 }
 function renderPhotos(el, ctx) {
   const slots = ctx.man.slots;
-  const wait = slots.filter((x) => !PHOTO_DONE.includes(x.status));
-  const done = slots.filter((x) => x.status === "uploaded");
+  const shots = slots.filter((x) => x.kind !== "figure");
+  const figs = slots.filter((x) => x.kind === "figure");
+  const wait = slots.filter((x) => slotWaiting(x, ctx.st));
+  const done = shots.filter((x) => x.status === "uploaded");
+  const figDone = figs.filter((x) => !slotWaiting(x, ctx.st) && x.status !== "skipped" && figCur(x, ctx.st)?.png);
+  const label = [shots.length ? "写真" : "", figs.length ? "図解" : ""].filter(Boolean).join("・");
   el.innerHTML = `<div class="card pad stack">
-    <div class="row" style="justify-content:space-between"><b>写真(${slots.length - wait.length}/${slots.length} 済み)</b>
+    <div class="row" style="justify-content:space-between"><b>${label}(${slots.length - wait.length}/${slots.length} 済み)</b>
       <button class="sub" id="phReload">更新</button></div>
-    ${wait.length ? `<div class="warn">全部の枠が「アップロード済み」か「スキップ」になるまで、公開できません。写真が要らなければ枠ごとにスキップしてください。</div>` : ""}
-    <details ${wait.length ? "open" : ""}><summary><b>撮る前に: 写り込みのチェック</b>(スクリーンショットも同じ)</summary>
+    ${wait.length ? `<div class="warn">${shots.length ? "写真は「アップロード済み」か「スキップ」、" : ""}${figs.length ? "図解は「承認済み」か「使わない」" : ""}になるまで、${ctx.st === "ja" ? "英訳に進めません" : "公開できません"}。</div>` : ""}
+    ${figs.map((x) => figureBox(x, ctx)).join("")}
+    ${shots.length ? `<details ${shots.some((x) => slotWaiting(x, ctx.st)) ? "open" : ""}><summary><b>撮る前に: 写り込みのチェック</b>(スクリーンショットも同じ)</summary>
       <ul class="phcheck">${PHOTO_CHECKLIST.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
       <p class="meta">写ってしまうものは、向きを変える・隠す・トリミングしてから撮り直してください。撮影場所・機種・日時などの情報は自動で消えます。</p></details>
-    ${ctx.closed ? "" : `<label class="row" style="gap:8px"><input type="checkbox" id="phOk">上のチェックリストを確認した(アップロードに必要)</label>`}
-    ${slots.map((x) => `<div class="phslot" data-id="${esc(x.id)}">
+    ${ctx.closed ? "" : `<label class="row" style="gap:8px"><input type="checkbox" id="phOk">上のチェックリストを確認した(アップロードに必要)</label>`}` : ""}
+    ${shots.map((x) => `<div class="phslot" data-id="${esc(x.id)}">
       <div class="row" style="justify-content:space-between"><b>${esc(x.id)} ${x.kind === "screenshot" ? "スクリーンショット" : "写真"}</b>
         <span class="chip ${x.status === "uploaded" ? "ok" : x.status === "skipped" ? "idle" : "warnchip"}">${esc(PHOTO_STATUS[x.status] || x.status)}</span></div>
       <div>${esc(x.instruction)}</div>
@@ -519,14 +609,15 @@ function renderPhotos(el, ctx) {
         <button class="sub phalt-save">説明を保存</button>
       </div>`}
     </div>`).join("")}
-    ${done.length ? `<div class="row"><button class="sub" id="phZip">写真をまとめてダウンロード(${done.length}枚)</button>
-      <span class="meta">${ctx.isSite ? "公開するとサイトに自動で入ります。" : "note・Substack には、本文の「【写真 p1 をここに貼る】」の位置に手で貼ってください。"}</span></div>` : ""}
+    ${done.length + figDone.length ? `<div class="row"><button class="sub" id="phZip">${label}をまとめてダウンロード(${done.length + figDone.length}枚)</button>
+      <span class="meta">${ctx.isSite ? "公開するとサイトに自動で入ります。" : "note・Substack はサーバーPC が下書きに入れます。入らなかったときは、本文の「【写真 p1 をここに貼る】」「【図 f1 をここに貼る】」の位置に手で貼ってください。"}</span></div>` : ""}
   </div>`;
   el.querySelectorAll(".phprev").forEach(async (img) => { try { img.src = await photoDataUrl(ctx, img.dataset.file); } catch {} });
   const again = () => go(() => draft(ctx.n), current?.title || "下書き", false);
   $("#phReload").onclick = again;
   const busy = (b, on) => { if (b) b.disabled = on; };
-  el.querySelectorAll(".phslot").forEach((box) => {
+  el.querySelectorAll(".fgslot").forEach((box) => bindFigure(box, ctx, again));
+  el.querySelectorAll(".phslot:not(.fgslot)").forEach((box) => {
     const id = box.dataset.id;
     const upload = async (input) => {
       const f = input.files[0]; if (!f) return;
@@ -600,7 +691,12 @@ function renderPhotos(el, ctx) {
         const j = await gh(`${R}/contents/${x.file}?ref=${encodeURIComponent(photoRef(ctx, x.file))}`);
         z.file(`${ctx.slug}-${x.id}.webp`, j.content.replace(/\n/g, ""), { base64: true });
       }
-      z.file("説明.txt", done.map((x) => `${x.id}: ${x.alt}`).join("\n") + "\n");
+      for (const x of figDone) {  // 図解は PNG(英語版の段階は英語の図)
+        const f = figCur(x, ctx.st).png;
+        const j = await gh(`${R}/contents/${f}?ref=${encodeURIComponent(ctx.ref)}`);
+        z.file(`${ctx.slug}-${x.id}.png`, j.content.replace(/\n/g, ""), { base64: true });
+      }
+      z.file("説明.txt", [...done.map((x) => `${x.id}: ${x.alt}`), ...figDone.map((x) => `${x.id}: ${figCur(x, ctx.st).spec?.alt || x.alt}`)].join("\n") + "\n");
       const blob = await z.generateAsync({ type: "blob" });
       const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${ctx.slug}-photos.zip`; a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 30000);
@@ -673,7 +769,7 @@ async function libraryEdit(id) {
   const findings = e.check?.findings || [];
   view.innerHTML = `<div class="card pad stack" style="margin-top:16px">
     <img id="libFull" alt="${esc(e.alt || "")}" style="width:100%;height:auto;border-radius:6px;border:1px solid var(--line)">
-    <div class="meta">${esc(e.id)} ・ ${e.kind === "screenshot" ? "スクリーンショット" : "写真"} ・ ${e.width}×${e.height} ・ ${Math.round((e.bytes || 0) / 1024)}KB</div>
+    <div class="meta">${esc(e.id)} ・ ${e.kind === "screenshot" ? "スクリーンショット" : e.kind === "figure" ? "図解" : "写真"} ・ ${e.width}×${e.height} ・ ${Math.round((e.bytes || 0) / 1024)}KB</div>
     ${!e.checked ? `<div class="warn stack"><b>写り込みが未確認です</b>(確認するまで記事の候補にも公開にも出ません)
       ${findings.length ? `<ul>${findings.map((f) => `<li>${esc([f.what, f.where, f.why].filter(Boolean).join(" ・ "))}</li>`).join("")}</ul>` : `<div class="meta">${esc(e.check?.note || "AI の確認ができていません。写真を目で確かめてください")}</div>`}
       <button class="sub" id="libAck">写り込みを確認した(使ってよい)</button></div>` : ""}
@@ -761,7 +857,7 @@ async function libPicker(el, slot, onPick) {
   if (!el.hidden) { el.hidden = true; return; }
   el.hidden = false; el.innerHTML = '<p class="meta">読み込み中…</p>';
   const d = await libLoad();
-  const ok = d.photos.filter(libUsable);
+  const ok = d.photos.filter((e) => libUsable(e) && e.kind !== "figure");  // 写真の枠には写真だけ(図解は図の枠で候補に出る)
   const cand = (slot.candidates || []).map((cid) => ok.find((e) => e.id === cid)).filter(Boolean);
   el.innerHTML = `<div class="stack">
     ${cand.length ? `<b>候補(撮影指示に近い写真)</b><div class="libgrid">${cand.map(libCard).join("")}</div>` : '<div class="meta">撮影指示に近い写真は見つかりませんでした。下で探せます。</div>'}
@@ -1038,7 +1134,8 @@ async function draft(n) {
   let sbMeta = null;
   if (ch === "substack" && st === "en") { try { sbMeta = JSON.parse((await getFile(`outbox/substack/${slug}/meta.json`)).text); } catch {} }
   let photoMan = null; try { photoMan = photoFile ? JSON.parse(photoFile.text) : null; } catch {}
-  const photoWait = photoMan ? photoMan.slots.filter((x) => !PHOTO_DONE.includes(x.status)).length : 0;
+  const photoWait = photoMan ? photoMan.slots.filter((x) => slotWaiting(x, st)).length : 0;
+  const imgs = photoMan ? await previewImages({ ch, slug, ref: pr.head.ref }, photoMan, st) : {};
   const ownerWait = pr.labels.some((l) => l.name === OWNER_LABEL);
   const thumbSrc = thumbFile?.content ? `data:image/png;base64,${thumbFile.content.replace(/\n/g, "")}` : "";
   let facts = null; try { facts = factFile ? JSON.parse(factFile.text) : null; } catch {}
@@ -1050,9 +1147,9 @@ async function draft(n) {
   const words = body.match(/[A-Za-z0-9][A-Za-z0-9'’.,%-]*/g)?.length || 0;
   const size = st === "en" ? `${words}語` : `${body.replace(/\s/g, "").length}字`;
   let primary = "";
-  if (st === "ja") primary = `<button class="act" id="pub">日本語版OK → 英訳へ</button>`;
+  if (st === "ja") primary = photoWait ? `<button class="act" id="pub" disabled>図解の確認待ち(${photoWait}枚)</button>` : `<button class="act" id="pub">日本語版OK → 英訳へ</button>`;
   else if (ownerWait) primary = `<button class="act" id="pub" disabled>オーナー確認待ち(上の「確認した」を押す)</button>`;
-  else if (photoWait) primary = `<button class="act" id="pub" disabled>写真待ち(${photoWait}枚)</button>`;
+  else if (photoWait) primary = `<button class="act" id="pub" disabled>写真・図解の確認待ち(${photoWait}枚)</button>`;
   else if (isSite) primary = `<button class="act" id="pub">公開する</button>`;
   else if (outbox) primary = `<button class="act" id="pub">承認する(note 登録待ちへ)</button>`;
   else primary = `<button class="act" id="pub">投稿済みにする</button>`;
@@ -1095,7 +1192,7 @@ async function draft(n) {
   </div></div>`}`;
   const pv = $("#pv");
   if (htmlFile) {
-    pv.srcdoc = htmlFile.text.replace("<head>", '<head><base target="_blank">');
+    pv.srcdoc = withImages(htmlFile.text.replace("<head>", '<head><base target="_blank">'), imgs);
   } else if (isSite) {
     pv.srcdoc = `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
       <base target="_blank"><link rel="stylesheet" href="${SITE}/assets/style.css"></head><body>
@@ -1103,11 +1200,11 @@ async function draft(n) {
       <main><div class="wrap">${ch === "lab" ? `<div class="note"><p><strong>作業時期</strong> ${esc(meta.worked_on || "(未記入)")}</p><p><strong>動作確認した環境</strong></p><ul>${
         [...file.text.split(/\n---\n/)[0].matchAll(/^\s+-\s*"?(.+?)"?\s*$/gm)].map((m) => `<li>${esc(m[1])}</li>`).join("") || "<li>(未記入)</li>"}</ul></div>`
         : (/\[\[ad:/.test(body) ? '<p class="pr-note">この記事にはプロモーション(広告)を含みます。</p>' : "") + '<div class="note"><p><strong>この記事を書いた人</strong></p><p>(テンプレートの著者欄)</p></div>'}
-      ${md(adPreview(body, adTypes)).replace(/href="([a-z0-9-]+\.html)"/g, `href="${SITE}/${ch === "lab" ? "lab" : "articles"}/$1"`)}<div class="note"><p><strong>LINE で受け取る</strong></p><p>(テンプレートが記事のテーマに合わせて LINE の友だち追加の枠を入れます。content/line.yml で止めているあいだは出ません)</p></div>${ch === "lab" ? '<div class="note"><p><strong>免責</strong></p><p>(テンプレートが末尾に免責を自動で付けます)</p></div>' : ""}</div></main></body></html>`;
+      ${withImages(md(adPreview(body, adTypes)), imgs).replace(/href="([a-z0-9-]+\.html)"/g, `href="${SITE}/${ch === "lab" ? "lab" : "articles"}/$1"`)}<div class="note"><p><strong>LINE で受け取る</strong></p><p>(テンプレートが記事のテーマに合わせて LINE の友だち追加の枠を入れます。content/line.yml で止めているあいだは出ません)</p></div>${ch === "lab" ? '<div class="note"><p><strong>免責</strong></p><p>(テンプレートが末尾に免責を自動で付けます)</p></div>' : ""}</div></main></body></html>`;
   } else {
     pv.srcdoc = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><base target="_blank">
       <style>body{max-width:680px;margin:24px auto;padding:0 16px;font-family:system-ui,sans-serif;line-height:1.8;color:#172231}</style></head>
-      <body><h1>${esc(meta.title || slug)}</h1>${md(body)}</body></html>`;
+      <body><h1>${esc(meta.title || slug)}</h1>${withImages(md(body), imgs)}</body></html>`;
   }
   pv.onload = () => { try { pv.style.height = pv.contentDocument.documentElement.scrollHeight + 20 + "px"; } catch {} };
   const cp = $("#copy");
@@ -1140,8 +1237,8 @@ async function draft(n) {
     await gh(`${R}/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body: "オーナーが伝聞の扱いを確認しました(デスクから)。公開できます。" }) });
     toast("確認済みにしました"); go(() => draft(n), current?.title || "下書き", false);
   });
-  if (photoMan && photoMan.slots.length) renderPhotos($("#photos"), { n, ch, slug, ref: pr.head.ref, man: photoMan, closed, isSite });
-  if (st === "ja") {
+  if (photoMan && photoMan.slots.length) renderPhotos($("#photos"), { n, ch, slug, ref: pr.head.ref, man: photoMan, closed, isSite, st });
+  if (st === "ja" && !photoWait) {
     twoTap($("#pub"), "英訳を始める", async () => {
       await gh(`${R}/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body: "/approve-ja\n\n(デスクから承認)" }) });
       toast("英訳を頼みました。数分後に英語版が届きます"); home();
