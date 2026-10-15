@@ -664,8 +664,13 @@ def render_article(a: dict, all_slugs: set[str]) -> str:
 """
 
 
-def lab_head(title: str, desc: str, url: str, og_type: str = "article") -> str:
+def lab_head(title: str, desc: str, url: str, og_type: str = "article", slug: str = "") -> str:
+    """しろくまラボのページの head。slug を渡すと、本社の publish が置いた OGP 画像(assets/og/lab/<slug>.png)があれば出す。"""
     t = esc(title)
+    has_img = bool(slug) and (ROOT / "assets" / "og" / "lab" / f"{slug}.png").exists()
+    img = f"{BASE}/assets/og/lab/{slug}.png"
+    og_img = (f'<meta property="og:image" content="{img}">\n<meta property="og:image:width" content="1200">\n'
+              f'<meta property="og:image:height" content="628">\n<meta name="twitter:image" content="{img}">\n') if has_img else ""
     return f"""<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -680,7 +685,7 @@ def lab_head(title: str, desc: str, url: str, og_type: str = "article") -> str:
 <meta property="og:url" content="{url}">
 <meta property="og:site_name" content="しろくま会計">
 <meta property="og:locale" content="ja_JP">
-<meta name="twitter:card" content="summary">
+{og_img}<meta name="twitter:card" content="{'summary_large_image' if has_img else 'summary'}">
 <link rel="stylesheet" href="../assets/style.css">"""
 
 
@@ -722,7 +727,7 @@ def render_lab_article(a: dict, lab_slugs: set[str], article_slugs: set[str]) ->
     }
     t = esc(a["title"])
     env = "".join(f"<li>{esc(str(x))}</li>" for x in a["environment"])
-    return f"""{lab_head(f"{a['title']} | {LAB_NAME} | しろくま会計", a["description"], url)}
+    return f"""{lab_head(f"{a['title']} | {LAB_NAME} | しろくま会計", a["description"], url, slug=a["slug"])}
 <script type="application/ld+json">
 {json.dumps(ld, ensure_ascii=False, indent=2)}
 </script>
