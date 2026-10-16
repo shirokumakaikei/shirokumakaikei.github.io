@@ -538,6 +538,8 @@ function withImages(html, imgs) {
     .replace(/<p>\[\[photo:([pf]\d+)\]\]<\/p>/g, (all, id) => fig(id) || all)
     .replace(/<p><strong>【(?:写真|図) ([pf]\d+) をここに貼る】<\/strong>[^<]*<\/p>/g, (all, id) => fig(id) || all);
 }
+// 有料ラインの目印 [[有料ライン: …]] の行を消す(前後の空行は1つにそろえる)。ほかの文字は変えない
+const dropPaidLine = (body) => body.replace(/^\[\[有料ライン[:：][^\n]*\]\][ \t]*\n(?:[ \t]*\n)?/gm, "").replace(/\n?\[\[有料ライン[:：][^\n]*\]\][ \t]*$/, "");
 function figureBox(x, ctx) {
   const cur = figCur(x, ctx.st);
   const st = cur ? (cur === x ? x.status : cur.status) : "stale";
@@ -1368,19 +1370,21 @@ async function draft(n) {
   if (ed) ed.onclick = () => go(() => editBody(n), "自分で直す");
   const pt = $("#paidToggle");
   if (pt) twoTap(pt, paidOn ? "本当に外す" : "本当に有料候補にする", async () => {
-    // 下書きの front matter の paid_candidate を付け外しし(本社の office.py が書き直しでもこの値を守る)、ラベルと書き直しを頼む
+    // 下書きの front matter の paid_candidate を付け外しし(本社の office.py が書き直しでもこの値を守る)、ラベルを付け外しする。
+    // 外すときは境界線の案の行をデスクがそのまま消す(AI は使わない。本文のほかの所は変わらない)。付けるときは境界線の位置を決めるので書き直しを頼む
     const f = await getFile(mdPath, pr.head.ref);
     const m = f.text.match(/^---\n([\s\S]*?)\n---\n/);
     if (!m) throw new Error("front matter が見つかりません");
     const fm = m[1].split("\n").filter((l) => !/^paid_candidate:/.test(l));
     if (!paidOn) { const at = fm.findIndex((l) => l.startsWith("date:")); fm.splice(at < 0 ? fm.length : at, 0, "paid_candidate: true"); }
-    await putFile(mdPath, `---\n${fm.join("\n")}\n---\n` + f.text.slice(m[0].length), f.sha, paidOn ? "有料候補から外す(デスクから)" : "有料候補にする(デスクから)", pr.head.ref);
+    const body = f.text.slice(m[0].length);
+    await putFile(mdPath, `---\n${fm.join("\n")}\n---\n` + (paidOn ? dropPaidLine(body) : body), f.sha, paidOn ? "有料候補から外す(デスクから)" : "有料候補にする(デスクから)", pr.head.ref);
     if (paidOn) await gh(`${R}/issues/${n}/labels/${encodeURIComponent("有料候補")}`, { method: "DELETE" }).catch(() => {});
     else await gh(`${R}/issues/${n}/labels`, { method: "POST", body: JSON.stringify({ labels: ["有料候補"] }) });
-    const ask = paidOn ? "/revise 有料候補から外した。[[有料ライン: …]] の行を消す。ほかは変えない"
-      : "/revise 有料候補にした。有料の境界線の案 [[有料ライン: 理由]] を本文に1つ置く。無料部分で誰向けか・何が分かるか・結論の要点を見せ、具体的な手順や表は後ろ(有料側)に置く。必要なら段落の順番だけ入れ替え、内容は変えない";
+    if (paidOn) { toast("有料候補から外し、境界線の案の行を消しました"); go(() => draft(n), current?.title || "下書き", false); return; }
+    const ask = "/revise 有料候補にした。有料の境界線の案 [[有料ライン: 理由]] を本文に1つ置く。無料部分で誰向けか・何が分かるか・結論の要点を見せ、具体的な手順や表は後ろ(有料側)に置く。必要なら段落の順番だけ入れ替え、内容は変えない";
     await gh(`${R}/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body: ask + "\n\n(デスクから)" }) });
-    toast(paidOn ? "外しました。境界線の案を消して書き直します" : "有料候補にしました。境界線の案を入れて書き直します"); go(() => draft(n), current?.title || "下書き", false);
+    toast("有料候補にしました。境界線の案を入れて書き直します"); go(() => draft(n), current?.title || "下書き", false);
   });
   const sps = $("#sbPlanSave");
   if (sps) sps.onclick = async () => {
