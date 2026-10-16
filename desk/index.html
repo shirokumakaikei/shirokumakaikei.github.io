@@ -305,9 +305,141 @@ async function settings() {
 }
 
 // ---------- 受信箱 ----------
+// 「要対応」は、オーナーが今操作しないと進まないものだけ(チェック・承認・写真・修正依頼・公開ボタン・SNS の投稿)。期限が近い順、期限の無いものは後ろ。
+// 自動で進むのを待っているだけのもの(Substack の下書き待ち、公開予定日前の記事、AI が作業中の下書きなど)は「待ち(自動で進行中)」(初期は折りたたみ)。
+const nowMs = () => (window.__deskNow ? new Date(window.__deskNow).getTime() : Date.now());  // テストでは時刻を固定する
+const jstNow = () => { const s = new Date(nowMs() + 9 * 3600e3).toISOString(); return { day: s.slice(0, 10), hm: s.slice(11, 16), key: s.slice(0, 16) }; };
+const dueKey = (date, time) => (date ? `${date}T${time || "23:59"}` : "");
+function dueLabel(date, time) {
+  if (!date) return "";
+  const [, m, d] = date.split("-").map(Number);
+  return `${m}/${d}(${"日月火水木金土"[new Date(date + "T00:00:00Z").getUTCDay()]})${time ? " " + time : ""}`;
+}
+// 本社の outbox/<note|substack>/<slug>/meta.json(承認後の公開の枠、下書きの登録・作成の記録)
+async function outboxMetas() {
+  const out = [];
+  for (const ch of ["note", "substack"]) {
+    const dirs = await gh(`${R}/contents/outbox/${ch}`).catch(() => []);
+    const ms = await Promise.all((Array.isArray(dirs) ? dirs : []).filter((d) => d.type === "dir").map((d) =>
+      getFile(`outbox/${ch}/${d.name}/meta.json`).then((f) => ({ ...JSON.parse(f.text), channel: ch, slug: d.name })).catch(() => null)));
+    out.push(...ms.filter(Boolean));
+  }
+  return out;
+}
+// SNS の枠(本社の shared/social.yml)。読めなければ既定値
+async function socConf() {
+  const y = (await getFile("shared/social.yml").catch(() => ({ text: "" }))).text;
+  const xt = (y.match(/^x_times:\s*\[([^\]]*)\]/m)?.[1] || "").split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter((s) => /^\d\d:\d\d$/.test(s));
+  const nt = y.match(/^notes_time:\s*["']?(\d\d:\d\d)/m)?.[1];
+  return { x_times: xt.length ? xt : ["07:00", "21:00"], notes_time: nt || "22:00" };
+}
+// 時刻を過ぎた投稿を「次の枠」へ。X は x_times の空いている枠、Threads は1日1本(x_times の時刻)、Notes は notes_time。今より後のいちばん近い枠
+function socNextSlot(items, it, conf) {
+  const times = (it.platform === "notes" ? [conf.notes_time] : conf.x_times).slice().sort();
+  const live = items.filter((y) => y.id !== it.id && y.platform === it.platform && y.status !== "skipped" && y.date);
+  const now = jstNow();
+  for (let i = 0; i < 15; i++) {
+    const day = jstDay(new Date(nowMs() + i * 86400e3));
+    if (it.platform === "threads" && live.some((y) => y.date === day)) continue;
+    for (const t of times) if (dueKey(day, t) > now.key && !live.some((y) => y.date === day && y.time === t)) return { date: day, time: t };
+  }
+  return null;
+}
+// 受信箱の項目を「要対応」と「待ち」に分ける。各項目: {sect, due(並べ替え用), kind, chip, t, m(期限と、何をするかの1行), open, soc(時刻を過ぎた SNS)}
+function inboxItems({ pulls, ops, watch, design, social, outbox, runs }) {
+  const now = jstNow(), today = now.day;
+  const has = (p, l) => p.labels.some((x) => x.name === l);
+  const line = (date, time, word, action) => (date ? `${dueLabel(date, time)}${word ? " " + word : ""}・${action}` : action);
+  const items = [];
+  const overdue = (watch && watch.overdue) || [];
+  const overduePr = new Set(overdue.map((x) => x.pr).filter(Boolean));
+  const overdueSlug = new Set(overdue.map((x) => `${x.channel}/${x.slug}`));
+  const meta = Object.fromEntries((outbox || []).map((m) => [`${m.channel}/${m.slug}`, m]));
+  // AI が作業中の下書き(/revise・英訳・図解の直し・写真の処理)。終わると要対応に戻る
+  const busy = (p) => ((runs && runs.workflow_runs) || []).some((r) => r.status !== "completed" && !r.path?.endsWith("/draft-check.yml")
+    && (r.head_branch === p.head?.ref || (r.event === "issue_comment" && r.display_title === p.title)));
+  for (const p of pulls.filter((p) => labelOf(p, "channel:") && !has(p, "editor") && !overduePr.has(p.number))) {
+    const ch = labelOf(p, "channel:"), st = labelOf(p, "stage:") || "final";
+    const slug = (p.head?.ref || "").split("/").slice(2).join("/");
+    const chip = `${chName(ch)}・${STAGE_LABEL[st] || st}${has(p, "要確認") ? "・要確認" : ""}${has(p, "写真待ち") ? "・写真待ち" : ""}${has(p, "図解の確認待ち") ? "・図解の確認待ち" : ""}${has(p, OWNER_LABEL) ? "・オーナー確認待ち" : ""}${has(p, "Substack下書き作成済み") ? "・Substack下書き済み" : ""}`;
+    const t = p.title.replace(/^\[[^\]]*\]\s*/, "").replace(/^(日本語版|英語版)[:：]\s*/, "");
+    const open = () => go(() => draft(p.number), STAGE_LABEL[st] || "下書き");
+    const acts = [];
+    if (has(p, "写真待ち")) acts.push("写真をアップするかスキップする");
+    if (has(p, "図解の確認待ち")) acts.push("図解を確かめて承認する");
+    if (has(p, OWNER_LABEL)) acts.push("伝聞の書き方を確かめて「確認した」を押す");
+    if (has(p, "要確認")) acts.push("ファクトチェックで残った誤りを確かめる");
+    const m = ch === "substack" ? meta[`substack/${slug}`] : null;
+    const pd = m?.planned_date || "", pt = m?.planned_time || "";
+    let sect = "todo", text;
+    if (busy(p)) { sect = "wait"; text = line(pd, pt, pd ? "公開予定" : "", "AI が作業中(終わると要対応に戻ります)"); }
+    else if (acts.length) text = line(pd, pt, pd ? "公開予定" : "", acts.join("・"));
+    else if (ch === "substack" && st === "en") {
+      const drafted = m?.drafted_at || has(p, "Substack下書き作成済み");
+      if (!drafted && (!pd || pd > today)) { sect = "wait"; text = line(pd, pt, "公開予定", "Substack の下書き作成待ち(サーバーPCが毎朝作ります)"); }
+      else if (!drafted) text = line(pd, pt, "公開予定", "下書きがまだできていません。HTML をコピーして Substack で公開する");
+      else if (pd && pd > today) { sect = "wait"; text = line(pd, pt, "公開予定", "公開予定日前(当日に要対応へ移ります)"); }
+      else text = line(pd, pt, "公開予定", "Substack で公開する");
+    } else text = st === "ja" ? "日本語版を確かめて「英訳へ」か修正を頼む"
+      : ch === "note" ? "下書きを確かめて承認する(note の登録待ちへ)" : onSite(ch) ? "下書きを確かめて承認する(承認で公開)" : "下書きを確かめて承認する";
+    items.push({ sect, due: sect === "todo" ? dueKey(pd, pt) : "", kind: st === "ja" ? "editor" : "draft", chip, t, m: text, open });
+  }
+  // 承認済みで公開の枠に入った note(本社の outbox。下書きの登録はサーバーPCが毎朝6:00)
+  for (const m of (outbox || []).filter((m) => m.channel === "note" && !m.published_at && !overdueSlug.has(`note/${m.slug}`))) {
+    const pd = m.planned_date || "", pt = m.planned_time || "";
+    const base = { kind: "draft", chip: `${chName("note")}・公開待ち${m.posted_at ? "・下書き登録済み" : ""}`, t: m.title || m.slug,
+                   open: () => toast(m.posted_at ? "note の下書き一覧から開いて公開してください(予約投稿でもよい)" : "サーバーPCが毎朝6:00に note へ下書きを登録します") };
+    if (!m.posted_at && (!pd || pd > today)) items.push({ ...base, sect: "wait", m: line(pd, pt, "公開予定", "note への下書き登録待ち(サーバーPCが毎朝6:00)") });
+    else if (!m.posted_at) items.push({ ...base, sect: "todo", due: dueKey(pd, pt), m: line(pd, pt, "公開予定", "下書きがまだ登録されていません。note に手で下書きを作って公開する") });
+    else if (pd && pd > today) items.push({ ...base, sect: "wait", m: line(pd, pt, "公開予定", "公開予定日前(当日に要対応へ移ります)") });
+    else items.push({ ...base, sect: "todo", due: dueKey(pd, pt), m: line(pd, pt, "公開予定", "note で公開する(予約投稿でもよい)") });
+  }
+  for (const x of overdue) items.push({ sect: "todo", due: dueKey(x.planned_date, ""), kind: "ops", chip: `${chName(x.channel)}・公開されていません`, t: x.title,
+    m: line(x.planned_date, "", "公開予定", `公開したか確かめる(公開したなら${x.channel === "note" ? "" : "「投稿済みにする」か"}RSS に出るまで待つ)`),
+    open: () => (x.pr && pulls.some((p) => p.number === x.pr)) ? go(() => draft(x.pr), "英語版")
+      : toast(`公開したなら、${x.channel === "note" ? "note" : "Substack"}の RSS に出るまで少し待つか、デスクの「投稿済みにする」で記録してください`) });
+  for (const p of pulls.filter((p) => has(p, "editor"))) items.push({ sect: "todo", due: "", kind: "editor", chip: `編集長・${chName(labelOf(p, "channel:"))}`,
+    t: p.title.replace(/^\[編集長\]\s*/, ""), m: "採用するネタを選ぶ", open: () => go(() => proposal(p.number), "ネタの提案") });
+  if (dsPending(design).length) items.push({ sect: "todo", due: "", kind: "draft", chip: `見た目の確認・${dsPending(design).length}件`,
+    t: dsPending(design).map((x) => x.title).join("、"), m: "見本の画像を見て決める", open: () => go(designView, "見た目の確認") });
+  // SNS: 今日の投稿(時刻を過ぎたものは別に出して、投稿・次の枠へ・取りやめを選べる)、1週間先までの承認待ち、承認済みで時刻待ち
+  const its = (social && social.items) || [], end = jstDay(new Date(nowMs() + 7 * 86400e3));
+  const live = its.filter((x) => ["approved", "draft"].includes(x.status) && x.date);
+  const toSns = () => go(socialView, "SNS");
+  for (const x of live.filter((x) => dueKey(x.date, x.time) <= now.key)) items.push({ sect: "todo", due: dueKey(x.date, x.time), kind: "ops", soc: x,
+    chip: `SNS・${SOC_NAME[x.platform]}・時刻を過ぎています`, t: x.text.replace(/\s+/g, " ").slice(0, 40) + (x.text.length > 40 ? "…" : ""),
+    m: line(x.date, x.time, "投稿", "時刻を過ぎています。そのまま投稿するか、次の枠にずらすか、取りやめる"), open: toSns });
+  for (const x of live.filter((x) => x.date === today && dueKey(x.date, x.time) > now.key)) items.push({ sect: "todo", due: dueKey(x.date, x.time), kind: "draft",
+    chip: `SNS・${SOC_NAME[x.platform]}`, t: x.text.replace(/\s+/g, " ").slice(0, 40) + (x.text.length > 40 ? "…" : ""),
+    m: line(x.date, x.time, "投稿", x.status === "draft" ? "本文を確かめて承認し、時刻になったら「投稿する」" : "時刻になったら「投稿する」"), open: toSns });
+  const wait = live.filter((x) => x.status === "draft" && x.date > today && x.date <= end).sort((a, b) => dueKey(a.date, a.time).localeCompare(dueKey(b.date, b.time)));
+  if (wait.length) items.push({ sect: "todo", due: dueKey(wait[0].date, wait[0].time), kind: "editor", chip: `SNS・承認待ち ${wait.length}件`, t: "1週間先までの告知文と単発ネタ",
+    m: line(wait[0].date, wait[0].time, "までに", "本文を確かめて承認する(まとめて承認できます)"), open: toSns });
+  const later = live.filter((x) => x.status === "approved" && x.date > today);
+  if (later.length) items.push({ sect: "wait", due: "", kind: "idle", chip: `SNS・承認済み ${later.length}件`, t: "この先の枠に入っている投稿",
+    m: "投稿する日になったら要対応に出ます", open: toSns });
+  for (const i of ops) items.push({ sect: "todo", due: "", kind: "ops", chip: "運用", t: i.title, m: `内容を確かめる(${ago(i.updated_at)} / コメント${i.comments}件)`,
+    open: () => go(() => opsView(i.number), "運用のお知らせ") });
+  // 期限が近い順。期限の無いものは後ろ(その中は元の順)
+  const order = (a, b) => (a.due ? 0 : 1) - (b.due ? 0 : 1) || (a.due || "").localeCompare(b.due || "");
+  // 待ちの項目は色を落とす(押すボタンが無いことが分かるように)
+  return { todo: items.filter((x) => x.sect === "todo").sort(order), wait: items.filter((x) => x.sect === "wait").sort(order).map((x) => ({ ...x, kind: "idle" })) };
+}
+// SNS を投稿する(「投稿する」と同じ。本文をクリップボードに入れ、投稿画面を開いて投稿済みにする)
+async function socPostNow(it, text, save) {
+  const full = socPostText(it, text);
+  const copied = await socCopy(full);
+  const saving = save(it.id, (x) => ({ text, status: "posted", posted_at: new Date().toISOString(), approved_at: x.approved_at || new Date().toISOString() }), `SNS: 投稿済み(${it.id})`);
+  if (it.platform === "notes") window.open("https://substack.com/notes", "_blank", "noopener");
+  else socOpen(it.platform, full, saving);
+  await saving;
+  return it.platform === "notes" ? "本文をコピーしました。Notes に貼って投稿してください"
+    : (copied ? "本文をコピーしました。" : "") + "投稿画面を開きました。投稿済みにしました";
+}
+const socSave = (id, patch, msg) => socUpdate((dd) => { const it = dd.items.find((y) => y.id === id); if (!it) throw new Error("見つかりません(更新してください)"); Object.assign(it, patch(it)); }, msg);
 async function inbox() {
   if (!token) return settings();
-  const [pulls, ops, reports, runs, siteRuns, chans, watch, design, social, today7] = await Promise.all([
+  const [pulls, ops, reports, runs, siteRuns, chans, watch, design, social, today7, outbox, sconf] = await Promise.all([
     gh(`${R}/pulls?state=open&per_page=50`),
     gh(`${R}/issues?labels=ops&state=open&per_page=5`),
     gh(`${R}/issues?labels=analyst-report&state=all&per_page=1`),
@@ -318,35 +450,10 @@ async function inbox() {
     dsLoad().catch(() => null),  // 見た目の確認(本社の tools/design_review.py)
     socLoad().catch(() => null),  // SNS の作り置き(本社の tools/social.py)
     getFile("shared/today.json").then((f) => JSON.parse(f.text)).catch(() => null),  // 毎朝7:00の「今日やること」(本社の tools/today.py)
+    outboxMetas().catch(() => []),  // 承認後の公開の枠(本社の outbox/)
+    socConf().catch(() => ({ x_times: ["07:00", "21:00"], notes_time: "22:00" })),
   ]);
-  const has = (p, l) => p.labels.some((x) => x.name === l);
-  const todo = [
-    ...pulls.filter((p) => labelOf(p, "channel:") && !has(p, "editor")).map((p) => {
-      const ch = labelOf(p, "channel:"), st = labelOf(p, "stage:") || "final";
-      return { kind: st === "ja" ? "editor" : "draft", chip: `${chName(ch)}・${STAGE_LABEL[st] || st}${has(p, "要確認") ? "・要確認" : ""}${has(p, "写真待ち") ? "・写真待ち" : ""}${has(p, OWNER_LABEL) ? "・オーナー確認待ち" : ""}${has(p, "Substack下書き作成済み") ? "・Substack下書き済み" : ""}`,
-               t: p.title.replace(/^\[[^\]]*\]\s*/, "").replace(/^(日本語版|英語版)[:：]\s*/, ""), m: ago(p.updated_at || p.created_at),
-               open: () => go(() => draft(p.number), STAGE_LABEL[st] || "下書き") };
-    }),
-    ...pulls.filter((p) => has(p, "editor")).map((p) => ({ kind: "editor", chip: `編集長・${chName(labelOf(p, "channel:"))}`,
-      t: p.title.replace(/^\[編集長\]\s*/, ""), m: ago(p.created_at), open: () => go(() => proposal(p.number), "ネタの提案") })),
-    ...((watch && watch.overdue) || []).map((x) => ({ kind: "ops", chip: `${chName(x.channel)}・公開されていません`, t: x.title,
-      m: `予定日 ${x.planned_date} を過ぎても公開を検知できていません`,
-      open: () => (x.pr && pulls.some((p) => p.number === x.pr)) ? go(() => draft(x.pr), "英語版")
-        : toast(`公開したなら、${x.channel === "note" ? "note" : "Substack"}の RSS に出るまで少し待つか、デスクの「投稿済みにする」で記録してください`) })),
-    ...(dsPending(design).length ? [{ kind: "draft", chip: `見た目の確認・${dsPending(design).length}件`,
-      t: dsPending(design).map((x) => x.title).join("、"), m: "見本の画像を見て決める", open: () => go(designView, "見た目の確認") }] : []),
-    ...(() => {  // SNS: 今日の投稿(まだのもの)と、1週間先までの承認待ち
-      const t = jstDay(), e = jstDay(new Date(Date.now() + 7 * 86400e3)), its = (social && social.items) || [];
-      const now = its.filter((x) => x.date === t && (x.status === "approved" || x.status === "draft"));
-      const wait = its.filter((x) => x.status === "draft" && x.date && x.date > t && x.date <= e);
-      return [...(now.length ? [{ kind: "draft", chip: `SNS・今日の投稿 ${now.length}件`, t: now.map((x) => `${x.time} ${SOC_NAME[x.platform]}`).join("、"),
-                                  m: "本文を確かめて「投稿する」", open: () => go(socialView, "SNS") }] : []),
-              ...(wait.length ? [{ kind: "editor", chip: `SNS・承認待ち ${wait.length}件`, t: "1週間先までの告知文と単発ネタ",
-                                   m: "まとめて承認できます", open: () => go(socialView, "SNS") }] : [])];
-    })(),
-    ...ops.map((i) => ({ kind: "ops", chip: "運用", t: i.title, m: `${ago(i.updated_at)} / コメント${i.comments}件`,
-      open: () => go(() => opsView(i.number), "運用のお知らせ") })),
-  ];
+  const { todo, wait } = inboxItems({ pulls, ops, watch, design, social, outbox, runs });
   const lastRun = (w) => ((w.repo === OFFICE ? runs : siteRuns).workflow_runs || []).find((r) => r.path?.endsWith("/" + w.file));
   const runChip = (r) => {
     if (!r) return '<span class="chip idle">未実行</span>';
@@ -364,7 +471,10 @@ async function inbox() {
   view.innerHTML = `
   ${t7 ? `<h2>今日やること <span class="meta" style="font-weight:400">(7:00 時点)</span></h2><div class="card pad" id="today7">${t7html}</div>` : ""}
   <h2>要対応 <span class="count">${todo.length}</span></h2>
-  <div class="card list" id="todo">${todo.length ? "" : '<p class="empty">いま判断が必要なものはありません。</p>'}</div>
+  <div class="card list" id="todo">${todo.length ? "" : '<p class="empty">いま操作が必要なものはありません。</p>'}</div>
+  <details class="card" id="waitBox"><summary class="pad"><b>待ち(自動で進行中)</b> <span class="count">${wait.length}</span>
+    <span class="meta">見なくても進みます。期限が来たら要対応に移ります</span></summary>
+    <div class="list" id="wait">${wait.length ? "" : '<p class="empty">ありません。</p>'}</div></details>
   <h2>週報</h2>
   <div class="card list">${rep ? `<button class="item" id="rep"><div class="main"><div class="t">${esc(rep.title)}</div><div class="m">${ago(rep.created_at)}</div></div>›</button>` : '<p class="empty">まだ週報はありません。</p>'}</div>
   <h2>AI社員の稼働</h2>
@@ -388,12 +498,33 @@ async function inbox() {
     <button class="item" id="ads"><div class="main"><div class="t">広告を管理する</div><div class="m">アフィリエイトの追加・停止・削除(しろくま会計)</div></div>›</button>
   </div>
   <p class="meta" style="margin-top:20px"><a href="${SITE}/" target="_blank" rel="noopener">しろくま会計を開く</a> ・ <a href="https://github.com/${OFFICE}" target="_blank" rel="noopener">本社(GitHub)</a></p>`;
-  const list = $("#todo");
-  todo.forEach((x) => {
-    const b = document.createElement("button"); b.className = "item";
-    b.innerHTML = `<div class="main"><span class="chip ${x.kind}">${esc(x.chip)}</span><div class="t">${esc(x.t)}</div><div class="m">${esc(x.m)}</div></div>›`;
-    b.onclick = x.open; list.appendChild(b);
-  });
+  const row = (x) => `<div class="main"><span class="chip ${x.kind}">${esc(x.chip)}</span><div class="t">${esc(x.t)}</div><div class="m">${esc(x.m)}</div></div>`;
+  const put = (list, x) => {
+    if (!x.soc) { const b = document.createElement("button"); b.className = "item"; b.innerHTML = row(x) + "›"; b.onclick = x.open; return list.appendChild(b); }
+    // 時刻を過ぎた SNS: そのまま投稿する / 次の枠にずらす / 取りやめる
+    const it = x.soc, d = document.createElement("div");
+    d.className = "item"; d.style.cssText = "display:block;cursor:default"; d.dataset.late = it.id;
+    d.innerHTML = row(x) + `<div class="row" style="margin-top:8px"><button class="act" data-late-post>そのまま投稿する</button>
+      <button class="sub" data-late-next>次の枠にずらす</button><button class="ghost" data-late-skip>取りやめる</button><button class="ghost" data-late-open>本文を見る</button></div>`;
+    const busyBtn = (b, fn) => { b.onclick = async () => { d.querySelectorAll("button").forEach((y) => (y.disabled = true));
+      try { toast(await fn()); go(inbox, "決裁デスク", false); } catch (e) { toast(e.message); d.querySelectorAll("button").forEach((y) => (y.disabled = false)); } }; };
+    const post = d.querySelector("[data-late-post]");
+    if (socNeedsUrl(it)) { post.disabled = true; post.title = "記事の公開を検知して URL が入るまで投稿できません"; }
+    busyBtn(post, () => socPostNow(it, it.text, socSave));
+    busyBtn(d.querySelector("[data-late-next]"), async () => {
+      let to = null;
+      await socUpdate((dd) => { const y = dd.items.find((z) => z.id === it.id); if (!y) throw new Error("見つかりません(更新してください)");
+        to = socNextSlot(dd.items, y, sconf); if (!to) throw new Error("2週間先まで空いている枠がありません");
+        Object.assign(y, { date: to.date, time: to.time, pinned: true }); }, `SNS: 次の枠にずらした(${it.id})`);
+      return `${dueLabel(to.date, to.time)} にずらしました`;
+    });
+    twoTap(d.querySelector("[data-late-skip]"), "取りやめる", async () => {
+      await socSave(it.id, () => ({ status: "skipped" }), `SNS: 取りやめ(${it.id})`); toast("取りやめました"); go(inbox, "決裁デスク", false); });
+    d.querySelector("[data-late-open]").onclick = x.open;
+    list.appendChild(d);
+  };
+  todo.forEach((x) => put($("#todo"), x));
+  wait.forEach((x) => put($("#wait"), x));
   if (rep) $("#rep").onclick = () => go(() => report(rep.number), "週報");
   view.querySelectorAll("[data-run]").forEach((b) => twoTap(b, "実行する", async () => {
     const w = WORKFLOWS[+b.dataset.run];
@@ -872,19 +1003,10 @@ async function socialView() {
       await save(it.id, () => ({ status: "approved", posted_at: null }), `SNS: 投稿済みを取り消し(${it.id})`); toast("取り消しました"); go(socialView, "SNS", false); });
     const post = card.querySelector("[data-post]");
     if (post) post.onclick = async () => {
-      const text = ta.value.trim(), full = socPostText(it, text);
-      // 押した時点で本文をクリップボードにも入れる(アプリが開かなかったときに貼り付けて使えるように)
-      const copied = await socCopy(full);
+      // 押した時点で本文をクリップボードにも入れる(アプリが開かなかったときに貼り付けて使えるように)。受信箱の「そのまま投稿する」と同じ
       post.disabled = true;
-      const saving = save(it.id, (x) => ({ text, status: "posted", posted_at: new Date().toISOString(), approved_at: x.approved_at || new Date().toISOString() }), `SNS: 投稿済み(${it.id})`);
-      if (it.platform === "notes") window.open("https://substack.com/notes", "_blank", "noopener");
-      else socOpen(it.platform, full, saving);
-      try {
-        await saving;
-        toast(it.platform === "notes" ? "本文をコピーしました。Notes に貼って投稿してください"
-          : (copied ? "本文をコピーしました。" : "") + "投稿画面を開きました。投稿済みにしました");
-        go(socialView, "SNS", false);
-      } catch (e) { toast(e.message); post.disabled = false; }
+      try { toast(await socPostNow(it, ta.value.trim(), save)); go(socialView, "SNS", false); }
+      catch (e) { toast(e.message); post.disabled = false; }
     };
   });
   const all = $("#socApproveAll");
