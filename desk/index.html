@@ -307,7 +307,7 @@ async function settings() {
 // ---------- 受信箱 ----------
 async function inbox() {
   if (!token) return settings();
-  const [pulls, ops, reports, runs, siteRuns, chans, watch, design] = await Promise.all([
+  const [pulls, ops, reports, runs, siteRuns, chans, watch, design, social, today7] = await Promise.all([
     gh(`${R}/pulls?state=open&per_page=50`),
     gh(`${R}/issues?labels=ops&state=open&per_page=5`),
     gh(`${R}/issues?labels=analyst-report&state=all&per_page=1`),
@@ -316,6 +316,8 @@ async function inbox() {
     loadChannels().catch(() => []),
     getFile("shared/publish-watch.json").then((f) => JSON.parse(f.text)).catch(() => null),  // 公開の自動検知(本社の tools/publish_watch.py)
     dsLoad().catch(() => null),  // 見た目の確認(本社の tools/design_review.py)
+    socLoad().catch(() => null),  // SNS の作り置き(本社の tools/social.py)
+    getFile("shared/today.json").then((f) => JSON.parse(f.text)).catch(() => null),  // 毎朝7:00の「今日やること」(本社の tools/today.py)
   ]);
   const has = (p, l) => p.labels.some((x) => x.name === l);
   const todo = [
@@ -333,6 +335,15 @@ async function inbox() {
         : toast(`公開したなら、${x.channel === "note" ? "note" : "Substack"}の RSS に出るまで少し待つか、デスクの「投稿済みにする」で記録してください`) })),
     ...(dsPending(design).length ? [{ kind: "draft", chip: `見た目の確認・${dsPending(design).length}件`,
       t: dsPending(design).map((x) => x.title).join("、"), m: "見本の画像を見て決める", open: () => go(designView, "見た目の確認") }] : []),
+    ...(() => {  // SNS: 今日の投稿(まだのもの)と、1週間先までの承認待ち
+      const t = jstDay(), e = jstDay(new Date(Date.now() + 7 * 86400e3)), its = (social && social.items) || [];
+      const now = its.filter((x) => x.date === t && (x.status === "approved" || x.status === "draft"));
+      const wait = its.filter((x) => x.status === "draft" && x.date && x.date > t && x.date <= e);
+      return [...(now.length ? [{ kind: "draft", chip: `SNS・今日の投稿 ${now.length}件`, t: now.map((x) => `${x.time} ${SOC_NAME[x.platform]}`).join("、"),
+                                  m: "本文を確かめて「投稿する」", open: () => go(socialView, "SNS") }] : []),
+              ...(wait.length ? [{ kind: "editor", chip: `SNS・承認待ち ${wait.length}件`, t: "1週間先までの告知文と単発ネタ",
+                                   m: "まとめて承認できます", open: () => go(socialView, "SNS") }] : [])];
+    })(),
     ...ops.map((i) => ({ kind: "ops", chip: "運用", t: i.title, m: `${ago(i.updated_at)} / コメント${i.comments}件`,
       open: () => go(() => opsView(i.number), "運用のお知らせ") })),
   ];
@@ -346,7 +357,12 @@ async function inbox() {
   };
   const enabled = chans.filter((c) => c.enabled);
   const rep = reports[0];
+  const t7 = today7 && today7.date === jstDay() ? today7 : null;  // 毎朝7:00に Slack へ送ったのと同じ一覧
+  let t7html = "";
+  if (t7) { let last = ""; t7html = (t7.lines || []).map((l) => { const h = l.head !== last ? `<div style="font-weight:700;margin-top:6px">${esc(l.head)}</div>` : ""; last = l.head; return h + `<div>・${esc(l.text)}</div>`; }).join("")
+    || `<div>${esc(t7.text)}</div>`; }
   view.innerHTML = `
+  ${t7 ? `<h2>今日やること <span class="meta" style="font-weight:400">(7:00 時点)</span></h2><div class="card pad" id="today7">${t7html}</div>` : ""}
   <h2>要対応 <span class="count">${todo.length}</span></h2>
   <div class="card list" id="todo">${todo.length ? "" : '<p class="empty">いま判断が必要なものはありません。</p>'}</div>
   <h2>週報</h2>
@@ -361,6 +377,7 @@ async function inbox() {
   <h2>方向を決める</h2>
   <div class="card list">
     <button class="item" id="addTopic"><div class="main"><div class="t">ネタを追加する</div><div class="m">媒体を選んで、次に書かせるテーマを入れる</div></div>›</button>
+    <button class="item" id="sns"><div class="main"><div class="t">SNS</div><div class="m">X・Threads・Substack Notes の今日の投稿と、告知文・単発ネタの承認</div></div>›</button>
     <button class="item" id="design"><div class="main"><div class="t">見た目の確認${dsPending(design).length ? ` <span class="count">${dsPending(design).length}</span>` : ""}</div><div class="m">図解・サムネなどの見た目を、見本の画像で決める</div></div>›</button>
     <button class="item" id="queue"><div class="main"><div class="t">ネタ帳を見る</div><div class="m">媒体ごとの、これから書く順番</div></div>›</button>
     <button class="item" id="ytch"><div class="main"><div class="t">参考チャンネル</div><div class="m">編集長が週1で見る YouTube チャンネルの追加・削除・ジャンル分け</div></div>›</button>
@@ -388,6 +405,7 @@ async function inbox() {
   $("#addTopic").onclick = () => go(addTopic, "ネタを追加");
   $("#queue").onclick = () => go(queueView, "ネタ帳");
   $("#design").onclick = () => go(designView, "見た目の確認");
+  $("#sns").onclick = () => go(socialView, "SNS");
   $("#addExp").onclick = () => go(addExperience, "体験を追加");
   $("#addPractice").onclick = () => go(addPractice, "実務メモを足す");
   $("#hearsay").onclick = () => go(hearsayView, "伝聞メモ");
@@ -731,6 +749,124 @@ function renderPhotos(el, ctx) {
     } catch (e) { toast(e.message); }
     zip.disabled = false;
   };
+}
+
+// ---------- SNS(本社の shared/social.json。告知文と単発ネタは social.yml が作り置き、投稿はオーナーがここで押す) ----------
+// API での自動投稿はしない。「投稿する」は本文入りの投稿画面を開くだけ(X・Threads は intent URL、Substack Notes はコピーして Notes を開く)
+const SOC_PATH = "shared/social.json";
+const SOC_NAME = { x: "X", threads: "Threads", notes: "Substack Notes" };
+const SOC_SRC = { x: "x", threads: "threads", notes: "substack_notes" };  // 記事リンクの utm_source(本社の social.link と同じ)
+const jstDay = (d = new Date()) => new Date(d.getTime() + 9 * 3600e3).toISOString().slice(0, 10);
+async function socLoad() {
+  try { return JSON.parse((await getFile(SOC_PATH)).text); }
+  catch (e) { if (/404/.test(e.message)) return { version: 1, items: [] }; throw e; }
+}
+async function socUpdate(fn, msg) {  // 同時に更新されたら取り直してやり直す(写真ライブラリと同じ)
+  for (let i = 0; i < 3; i++) {
+    const f = await getFile(SOC_PATH);
+    const d = JSON.parse(f.text);
+    fn(d);
+    try { await putFile(SOC_PATH, JSON.stringify(d, null, 1) + "\n", f.sha, msg); return d; }
+    catch (e) { if (!/409|422|sha|match/i.test(e.message) || i === 2) throw e; }
+  }
+}
+// X の文字数(重み付き。全角1字=2、半角1字=1、URL は 23)。本社の social.x_weight と同じ。280 で全角140字
+const xHalf = (c) => { const o = c.codePointAt(0); return o <= 0x10ff || (o >= 0x2000 && o <= 0x200d) || (o >= 0x2010 && o <= 0x201f) || (o >= 0x2032 && o <= 0x2037); };
+function xWeight(text, url) {
+  let t = String(text || "").normalize("NFC");
+  const urls = t.match(/https?:\/\/\S+/g) || [];
+  urls.forEach((u) => { t = t.replace(u, ""); });
+  return [...t].reduce((n, c) => n + (xHalf(c) ? 1 : 2), 0) + 23 * (urls.length + (url ? 1 : 0)) + (url && text ? 1 : 0);
+}
+function socLink(it) {
+  const s = it.source || {};
+  if (!s.url) return "";
+  const q = new URLSearchParams({ utm_source: SOC_SRC[it.platform], utm_medium: "social", ...(s.slug ? { utm_campaign: s.slug } : {}) });
+  return s.url + (s.url.includes("?") ? "&" : "?") + q.toString();
+}
+const socPostText = (it, text) => { const u = socLink(it); return text + (u ? "\n" + u : ""); };
+const socNeedsUrl = (it) => it.kind !== "tip" && !(it.source || {}).url;
+function socCount(it, text) {
+  if (it.platform === "x") { const w = xWeight(text, it.kind !== "tip" ? "x" : ""); return { ok: w <= 280, label: `全角換算 ${Math.ceil(w / 2)} / 140字(URL込み)` }; }
+  const n = [...text].length; const max = it.platform === "notes" ? 600 : 470;
+  return { ok: n <= max, label: `${n} / ${max}字` };
+}
+const SOC_RULE = /[4４四]科目(?:に)?合格|(?:消費税法?|相続税法?)(?:の|を|に)?(?:科目)?合格|—|―|line\.me|lin\.ee/;  // 直したときの簡単な検証(本社の social.check の一部)
+const socWithin24h = (it) => it.posted_at && Date.now() - new Date(it.posted_at).getTime() < 24 * 3600e3;
+function socCard(it, mode) {
+  const posted = it.status === "posted";
+  return `<div class="card pad stack" data-soc="${esc(it.id)}">
+    <div class="row" style="justify-content:space-between"><div class="row">${mode === "wait" ? `<input type="checkbox" data-pick checked style="width:22px;height:22px" aria-label="まとめて承認に入れる">` : ""}
+      <b>${esc(it.time || "")}</b> <span class="chip editor">${SOC_NAME[it.platform]}</span>
+      <span class="chip ${it.kind === "tip" ? "idle" : "draft"}">${it.kind === "tip" ? "単発ネタ" : it.kind === "note" ? "Notes" : "告知"}</span>
+      ${it.status === "draft" ? '<span class="chip warn">承認待ち</span>' : ""}${posted ? '<span class="chip ok">投稿済み</span>' : ""}</div>
+      <span class="meta">${esc(it.date || "")}</span></div>
+    ${it.source && it.source.title ? `<div class="meta">記事: ${esc(it.source.title)}${it.source.url ? "" : "(公開を検知したら URL が入ります)"}</div>` : ""}
+    <textarea data-text ${posted ? "readonly" : ""} rows="5">${esc(it.text)}</textarea>
+    <div class="meta" data-count></div>
+    ${(it.errors || []).length ? `<div class="warn"><h3>確認してほしい点</h3><ul>${it.errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>` : ""}
+    ${socLink(it) ? `<div class="meta" style="overflow-wrap:anywhere">リンク: ${esc(socLink(it))}</div>` : ""}
+    <div class="row">
+      ${posted ? `<span class="meta">${when(it.posted_at)} に投稿</span>${socWithin24h(it) ? '<button class="sub" data-undo>取り消し</button>' : ""}`
+        : `${mode === "wait" ? "" : `<button class="act" data-post style="flex:1;min-height:48px" ${socNeedsUrl(it) ? "disabled" : ""}>${it.platform === "notes" ? "コピーして Notes を開く" : "投稿する"}</button>`}
+           ${it.status === "draft" ? '<button class="sub" data-approve>承認</button>' : ""}<button class="sub" data-save>本文を保存</button><button class="ghost" data-skip>見送る</button>`}
+    </div></div>`;
+}
+async function socialView() {
+  const d = await socLoad();
+  const today = jstDay();
+  const end = jstDay(new Date(Date.now() + 7 * 86400e3));
+  const items = d.items || [];
+  const todayItems = items.filter((x) => x.date === today && ["approved", "posted", "draft"].includes(x.status)).sort((a, b) => (a.time || "").localeCompare(b.time || "") || a.platform.localeCompare(b.platform));
+  const wait = items.filter((x) => x.status === "draft" && x.date && x.date > today && x.date <= end).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  const later = items.filter((x) => x.status === "approved" && x.date && x.date > today).length;
+  view.innerHTML = `<div class="stack" style="margin-top:16px">
+    <p class="meta">「投稿する」は本文入りの投稿画面を開くだけです(自動では投稿しません)。開いた画面で投稿したら、この欄は投稿済みになります。間違えたら24時間以内なら「取り消し」で戻せます。本文は押す前に直せます。</p>
+    <h2 style="margin:8px 0 0">今日の投稿 <span class="count" id="socToday">${todayItems.filter((x) => x.status !== "posted").length}</span></h2>
+    ${todayItems.map((x) => socCard(x, "today")).join("") || '<div class="card"><p class="empty">今日の投稿はありません。</p></div>'}
+    <h2 style="margin:8px 0 0">承認待ち(1週間先まで) <span class="count" id="socWait">${wait.length}</span></h2>
+    ${wait.length ? `<button class="act" id="socApproveAll" style="min-height:48px">チェックしたものをまとめて承認</button>${wait.map((x) => socCard(x, "wait")).join("")}`
+      : '<div class="card"><p class="empty">承認待ちはありません。</p></div>'}
+    <p class="meta">承認済みでこの先の枠に入っているもの: ${later}件</p></div>`;
+  const byId = (id) => items.find((x) => x.id === id);
+  const save = (id, patch, msg) => socUpdate((dd) => { const it = dd.items.find((y) => y.id === id); if (!it) throw new Error("見つかりません(更新してください)"); Object.assign(it, patch(it)); }, msg);
+  view.querySelectorAll("[data-soc]").forEach((card) => {
+    const it = byId(card.dataset.soc), ta = card.querySelector("[data-text]"), cnt = card.querySelector("[data-count]");
+    const recount = () => { const c = socCount(it, ta.value); const bad = SOC_RULE.test(ta.value);
+      cnt.textContent = c.label + (bad ? "  ・経歴の書き方かエムダッシュ・LINE のリンクを直してください" : "");
+      cnt.style.color = c.ok && !bad ? "" : "var(--ng)"; const p = card.querySelector("[data-post]"); if (p && !socNeedsUrl(it)) p.disabled = !c.ok || bad; };
+    ta.oninput = recount; recount();
+    const btn = (sel, fn) => { const b = card.querySelector(sel); if (b) b.onclick = async () => { b.disabled = true; try { await fn(); } catch (e) { toast(e.message); b.disabled = false; } }; };
+    btn("[data-save]", async () => { await save(it.id, () => ({ text: ta.value.trim() }), `SNS: 本文を直した(${it.id})`); toast("保存しました"); });
+    btn("[data-approve]", async () => { await save(it.id, () => ({ text: ta.value.trim(), status: "approved", approved_at: new Date().toISOString() }), `SNS: 承認(${it.id})`); toast("承認しました"); go(socialView, "SNS", false); });
+    btn("[data-skip]", async () => { await save(it.id, () => ({ status: "skipped" }), `SNS: 見送り(${it.id})`); toast("見送りにしました"); go(socialView, "SNS", false); });
+    btn("[data-undo]", async () => {
+      if (!socWithin24h(it)) throw new Error("24時間を過ぎたので取り消せません");
+      await save(it.id, () => ({ status: "approved", posted_at: null }), `SNS: 投稿済みを取り消し(${it.id})`); toast("取り消しました"); go(socialView, "SNS", false); });
+    const post = card.querySelector("[data-post]");
+    if (post) post.onclick = async () => {
+      const text = ta.value.trim(), full = socPostText(it, text);
+      // 先に投稿画面を開く(押した直後でないとポップアップが止められる)
+      if (it.platform === "x") window.open("https://x.com/intent/post?text=" + encodeURIComponent(full), "_blank", "noopener");
+      else if (it.platform === "threads") window.open("https://www.threads.net/intent/post?text=" + encodeURIComponent(full), "_blank", "noopener");
+      else { try { await navigator.clipboard.writeText(full); } catch {} window.open("https://substack.com/notes", "_blank", "noopener"); }
+      post.disabled = true;
+      try {
+        await save(it.id, (x) => ({ text, status: "posted", posted_at: new Date().toISOString(), approved_at: x.approved_at || new Date().toISOString() }), `SNS: 投稿済み(${it.id})`);
+        toast(it.platform === "notes" ? "本文をコピーしました。Notes に貼って投稿してください" : "投稿画面を開きました。投稿済みにしました");
+        go(socialView, "SNS", false);
+      } catch (e) { toast(e.message); post.disabled = false; }
+    };
+  });
+  const all = $("#socApproveAll");
+  if (all) twoTap(all, "まとめて承認する", async () => {
+    const picks = [...view.querySelectorAll("[data-soc]")].filter((c) => c.querySelector("[data-pick]")?.checked)
+      .map((c) => ({ id: c.dataset.soc, text: c.querySelector("[data-text]").value.trim() }));
+    if (!picks.length) return toast("チェックしたものがありません");
+    await socUpdate((dd) => { for (const p of picks) { const it = dd.items.find((y) => y.id === p.id); if (it && it.status === "draft") Object.assign(it, { text: p.text, status: "approved", approved_at: new Date().toISOString() }); } },
+      `SNS: ${picks.length}件をまとめて承認`);
+    toast(`${picks.length}件を承認しました`); go(socialView, "SNS", false);
+  });
 }
 
 // ---------- 見た目の確認(本社の shared/design-reviews.json。決めた内容は design-review.yml が設定に入れる) ----------
