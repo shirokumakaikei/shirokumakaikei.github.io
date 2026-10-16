@@ -1308,7 +1308,8 @@ async function prCheck(el, n, sha, comments, waiting) {
     return;
   }
   let run = null;
-  try { run = (await gh(`${R}/actions/workflows/${CHECK_WF}/runs?head_sha=${sha}&per_page=5`)).workflow_runs?.[0] || null; } catch { if (!waiting) return; }
+  // bot の push の実行は承認待ち(action_required)で動かず、本社が別に起動し直す(draft-check.yml の先頭)。それは数えない
+  try { run = (await gh(`${R}/actions/workflows/${CHECK_WF}/runs?head_sha=${sha}&per_page=5`)).workflow_runs?.find((r) => r.conclusion !== "action_required") || null; } catch { if (!waiting) return; }
   if (!run && !waiting) { el.innerHTML = ""; return; }
   if (run && run.status === "completed") {
     const cs = await gh(`${R}/issues/${n}/comments?per_page=100`).catch(() => []);
