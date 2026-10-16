@@ -812,6 +812,33 @@ function socCard(it, mode) {
            ${it.status === "draft" ? '<button class="sub" data-approve>承認</button>' : ""}<button class="sub" data-save>本文を保存</button><button class="ghost" data-skip>見送る</button>`}
     </div></div>`;
 }
+// iPhone・iPad では、X と Threads のアプリを直接開く(intent URL はアプリ内のブラウザで開いてログインを求められるため)。
+// アプリが開かなかった(約1.5秒たってもこのページが表示されたまま)ときは intent URL に切り替える。PC は intent URL を新しいタブで開く
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const SOC_INTENT = { x: (t) => "https://x.com/intent/post?text=" + encodeURIComponent(t), threads: (t) => "https://www.threads.net/intent/post?text=" + encodeURIComponent(t) };
+// アプリを直接開く URL。X は twitter://post?message=。Threads は公式の投稿用 URL が無いので、アプリ(barcelona://)を開いて本文はクリップボードから貼る
+const SOC_APP = { x: (t) => "twitter://post?message=" + encodeURIComponent(t), threads: (t) => "barcelona://create?text=" + encodeURIComponent(t) };
+const socNav = (u) => (window.__deskNav ? window.__deskNav(u) : (location.href = u));  // テストでは差し替える
+async function socCopy(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
+}
+function socOpen(platform, full, saving) {
+  if (!isIOS()) { window.open(SOC_INTENT[platform](full), "_blank", "noopener"); return "intent"; }
+  let left = false;
+  const away = () => { left = true; };
+  document.addEventListener("visibilitychange", away, { once: true });
+  window.addEventListener("pagehide", away, { once: true });
+  window.addEventListener("blur", away, { once: true });
+  socNav(SOC_APP[platform](full));
+  setTimeout(async () => {
+    document.removeEventListener("visibilitychange", away); window.removeEventListener("pagehide", away); window.removeEventListener("blur", away);
+    if (left || document.visibilityState !== "visible") return;
+    // アプリが開かなかった。このページから移るので、投稿済みの記録が終わるのを待ってから(最大5秒)
+    await Promise.race([Promise.resolve(saving).catch(() => {}), new Promise((r) => setTimeout(r, 5000))]);
+    socNav(SOC_INTENT[platform](full));
+  }, window.__deskAppWait || 1500);
+  return "app";
+}
 async function socialView() {
   const d = await socLoad();
   const today = jstDay();
@@ -821,7 +848,7 @@ async function socialView() {
   const wait = items.filter((x) => x.status === "draft" && x.date && x.date > today && x.date <= end).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
   const later = items.filter((x) => x.status === "approved" && x.date && x.date > today).length;
   view.innerHTML = `<div class="stack" style="margin-top:16px">
-    <p class="meta">「投稿する」は本文入りの投稿画面を開くだけです(自動では投稿しません)。開いた画面で投稿したら、この欄は投稿済みになります。間違えたら24時間以内なら「取り消し」で戻せます。本文は押す前に直せます。</p>
+    <p class="meta">「投稿する」は本文入りの投稿画面を開くだけです(自動では投稿しません)。iPhone では X・Threads のアプリが開きます。押したときに本文もコピーするので、アプリに本文が入っていなければ貼り付けてください。間違えたら24時間以内なら「取り消し」で戻せます。本文は押す前に直せます。</p>
     <h2 style="margin:8px 0 0">今日の投稿 <span class="count" id="socToday">${todayItems.filter((x) => x.status !== "posted").length}</span></h2>
     ${todayItems.map((x) => socCard(x, "today")).join("") || '<div class="card"><p class="empty">今日の投稿はありません。</p></div>'}
     <h2 style="margin:8px 0 0">承認待ち(1週間先まで) <span class="count" id="socWait">${wait.length}</span></h2>
@@ -846,14 +873,16 @@ async function socialView() {
     const post = card.querySelector("[data-post]");
     if (post) post.onclick = async () => {
       const text = ta.value.trim(), full = socPostText(it, text);
-      // 先に投稿画面を開く(押した直後でないとポップアップが止められる)
-      if (it.platform === "x") window.open("https://x.com/intent/post?text=" + encodeURIComponent(full), "_blank", "noopener");
-      else if (it.platform === "threads") window.open("https://www.threads.net/intent/post?text=" + encodeURIComponent(full), "_blank", "noopener");
-      else { try { await navigator.clipboard.writeText(full); } catch {} window.open("https://substack.com/notes", "_blank", "noopener"); }
+      // 押した時点で本文をクリップボードにも入れる(アプリが開かなかったときに貼り付けて使えるように)
+      const copied = await socCopy(full);
       post.disabled = true;
+      const saving = save(it.id, (x) => ({ text, status: "posted", posted_at: new Date().toISOString(), approved_at: x.approved_at || new Date().toISOString() }), `SNS: 投稿済み(${it.id})`);
+      if (it.platform === "notes") window.open("https://substack.com/notes", "_blank", "noopener");
+      else socOpen(it.platform, full, saving);
       try {
-        await save(it.id, (x) => ({ text, status: "posted", posted_at: new Date().toISOString(), approved_at: x.approved_at || new Date().toISOString() }), `SNS: 投稿済み(${it.id})`);
-        toast(it.platform === "notes" ? "本文をコピーしました。Notes に貼って投稿してください" : "投稿画面を開きました。投稿済みにしました");
+        await saving;
+        toast(it.platform === "notes" ? "本文をコピーしました。Notes に貼って投稿してください"
+          : (copied ? "本文をコピーしました。" : "") + "投稿画面を開きました。投稿済みにしました");
         go(socialView, "SNS", false);
       } catch (e) { toast(e.message); post.disabled = false; }
     };
