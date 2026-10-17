@@ -46,6 +46,26 @@ SHOP_HOSTS = {
     "rakuten_url": ("楽天", ("hb.afl.rakuten.co.jp", "a.r10.to", "r10.to")),
 }
 SHOP_LINK_REL = "nofollow sponsored noopener"
+# アフィリエイトリンクの判定(2026-10-17 オーナー決定)。PR 表記と Amazon の表記は、目印ではなく、できあがった本文の HTML に
+# このドメインの URL があるかで機械的に決める。無ければ表記を出さない、あれば必ず出す(ステマ規制)。本社の office.py も同じ一覧
+AFFILIATE_HOSTS = {
+    "amazon": ("amazon.co.jp", "amazon.com", "amzn.to", "amzn.asia", "link.amazon"),
+    "rakuten": ("rakuten.co.jp", "a.r10.to", "r10.to"),
+    "asp": ("a8.net", "moshimo.com", "msmstatic.com", "valuecommerce.com", "valuecommerce.ne.jp", "accesstrade.net",
+            "afi-b.com", "felmat.net", "rentracks.jp", "linksynergy.com", "tcs-asp.net"),
+}
+URL_HOST_RE = re.compile(r'(?:https?:)?//([A-Za-z0-9.-]+)')
+
+
+def affiliate_kinds(html: str) -> set[str]:
+    """本文の HTML にあるアフィリエイトリンクの種類(amazon / rakuten / asp)。無ければ空。"""
+    kinds = set()
+    for h in URL_HOST_RE.findall(html or ""):
+        h = h.lower().rstrip(".")
+        for k, hosts in AFFILIATE_HOSTS.items():
+            if any(h == d or h.endswith("." + d) for d in hosts):
+                kinds.add(k)
+    return kinds
 # 記事の写真(本社の docs/photo-requirements.md)。本文の目印 [[photo:p1]] を、assets/photos/<articles|lab>/<slug>/p1.webp の figure にする。
 # alt と大きさは front matter の photos(本社の publish が書く)。画像はメタデータを消した WebP だけ
 PHOTO_RE = re.compile(r"^\[\[photo:([pf]\d+)\]\]\s*$", re.M)  # p1 は写真、f1 は図解(本社の tools/figures.py が作った WebP)
@@ -317,13 +337,6 @@ def product_box(pid: str, ad: dict, prefix: str = "../") -> str:
     return f'\n<div class="ad-product">\n<p class="ad-product-label">{PRODUCT_LABEL}</p>\n{head}\n{links}\n</div>\n'
 
 
-def uses_amazon(body_md: str) -> bool:
-    """本文の商品リンクに Amazon のリンクがあるか(末尾に Amazon アソシエイトの表記を出す)。"""
-    ads = load_ads(active_only=True)
-    return any(ad_type(ads.get(m.group(1)) or {}) == "product" and (ads[m.group(1)].get("amazon_url"))
-               and not m.group(2) for m in AD_RE.finditer(body_md))
-
-
 def expand_ads(body_md: str) -> tuple[str, bool]:
     """目印を広告コードに置き換える。停止・削除した広告の目印は消す。"""
     ads = load_ads(active_only=True)
@@ -570,9 +583,10 @@ def list_titles(exclude: str = "", section: str = "articles") -> list[tuple[str,
 # ---------- レンダリング ----------
 
 def render_article(a: dict, all_slugs: set[str]) -> str:
-    body_md, has_ad = expand_ads(expand_photos(a["body_md"], a, "articles"))
-    amazon = uses_amazon(a["body_md"])
+    body_md, _ = expand_ads(expand_photos(a["body_md"], a, "articles"))
     body = markdown.markdown(body_md, extensions=["tables", "sane_lists"])
+    aff = affiliate_kinds(body)  # PR 表記と Amazon の表記は、本文に実際にあるリンクで決める
+    has_ad, amazon = bool(aff), "amazon" in aff
     for target in re.findall(r'href="([a-z0-9-]+)\.html"', body):
         if target not in all_slugs:
             raise BuildError(f"{a['slug']}: 内部リンク先 {target}.html が存在しません")
@@ -690,9 +704,10 @@ def lab_head(title: str, desc: str, url: str, og_type: str = "article", slug: st
 
 
 def render_lab_article(a: dict, lab_slugs: set[str], article_slugs: set[str]) -> str:
-    body_md, has_ad = expand_ads(expand_photos(a["body_md"], a, "lab"))  # 使った機材(商品リンク)だけ
-    amazon = uses_amazon(a["body_md"])
+    body_md, _ = expand_ads(expand_photos(a["body_md"], a, "lab"))  # 使った機材(商品リンク)だけ
     body = markdown.markdown(body_md, extensions=["tables", "sane_lists", "fenced_code"])
+    aff = affiliate_kinds(body)  # PR 表記と Amazon の表記は、本文に実際にあるリンクで決める
+    has_ad, amazon = bool(aff), "amazon" in aff
     for target in re.findall(r'href="([a-z0-9-]+)\.html"', body):
         if target not in lab_slugs and target != "index":
             raise BuildError(f"lab/{a['slug']}: 内部リンク先 {target}.html がしろくまラボにありません")
