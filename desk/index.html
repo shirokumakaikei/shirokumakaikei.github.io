@@ -426,15 +426,22 @@ function inboxItems({ pulls, ops, watch, design, social, outbox, runs }) {
   return { todo: items.filter((x) => x.sect === "todo").sort(order), wait: items.filter((x) => x.sect === "wait").sort(order).map((x) => ({ ...x, kind: "idle" })) };
 }
 // SNS を投稿する(「投稿する」と同じ。本文をクリップボードに入れ、投稿画面を開いて投稿済みにする)
+// Substack Notes には本文を入れて開く URL が無いので、本文をコピーして Notes を開き、貼り付けて投稿する。
+// PC は押した直後(await の前)に新しいタブで開く(後だとポップアップとして止められる)。
+// iPhone・iPad は投稿済みの記録を待ってからこのタブで開く(Substack のアプリが入っていればアプリが開く)
+const SOC_NOTES = "https://substack.com/notes";
 async function socPostNow(it, text, save) {
   const full = socPostText(it, text);
-  const copied = await socCopy(full);
+  const notes = it.platform === "notes";
+  const copying = socCopy(full);
+  if (notes && !isIOS()) window.open(SOC_NOTES, "_blank", "noopener");
+  const copied = await copying;
   const saving = save(it.id, (x) => ({ text, status: "posted", posted_at: new Date().toISOString(), approved_at: x.approved_at || new Date().toISOString() }), `SNS: 投稿済み(${it.id})`);
-  if (it.platform === "notes") window.open("https://substack.com/notes", "_blank", "noopener");
-  else socOpen(it.platform, full, saving);
+  if (!notes) socOpen(it.platform, full, saving);
   await saving;
-  return it.platform === "notes" ? "本文をコピーしました。Notes に貼って投稿してください"
-    : (copied ? "本文をコピーしました。" : "") + "投稿画面を開きました。投稿済みにしました";
+  if (notes && isIOS()) socNav(SOC_NOTES);
+  if (notes) return copied ? "本文をコピーしました。Notes の投稿欄に貼り付けて投稿してください" : "コピーできませんでした。本文を選んでコピーしてください";
+  return (copied ? "本文をコピーしました。" : "") + "投稿画面を開きました。投稿済みにしました";
 }
 const socSave = (id, patch, msg) => socUpdate((dd) => { const it = dd.items.find((y) => y.id === id); if (!it) throw new Error("見つかりません(更新してください)"); Object.assign(it, patch(it)); }, msg);
 async function inbox() {
@@ -950,8 +957,19 @@ const SOC_INTENT = { x: (t) => "https://x.com/intent/post?text=" + encodeURIComp
 // アプリを直接開く URL。X は twitter://post?message=。Threads は公式の投稿用 URL が無いので、アプリ(barcelona://)を開いて本文はクリップボードから貼る
 const SOC_APP = { x: (t) => "twitter://post?message=" + encodeURIComponent(t), threads: (t) => "barcelona://create?text=" + encodeURIComponent(t) };
 const socNav = (u) => (window.__deskNav ? window.__deskNav(u) : (location.href = u));  // テストでは差し替える
+// 押した直後に呼ぶ。iPhone の Safari は await のあとだとコピーを断ることがあるので、先に昔のやり方(選択してコピー)を同期で試す
+function socCopySync(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;font-size:16px";
+  document.body.appendChild(ta); ta.focus(); ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  ta.remove();
+  return ok;
+}
 async function socCopy(text) {
-  try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
+  const sync = socCopySync(text);
+  try { await navigator.clipboard.writeText(text); return true; } catch { return sync; }
 }
 function socOpen(platform, full, saving) {
   if (!isIOS()) { window.open(SOC_INTENT[platform](full), "_blank", "noopener"); return "intent"; }
