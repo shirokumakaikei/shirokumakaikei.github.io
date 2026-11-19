@@ -690,7 +690,7 @@ function withImages(html, imgs) {
     return `<figure style="margin:20px 0${m.wait ? ";outline:3px dashed #d97706;outline-offset:4px" : ""}"><img src="${m.src}" alt="${esc(m.alt)}" style="width:100%;height:auto;display:block">`
       + `${m.wait ? `<figcaption style="font-size:13px;color:#b45309">${m.fig ? "図" : "写真"} ${id}: 確認待ち(上の「写真・図解」で承認)</figcaption>` : ""}</figure>`; };
   return html.replace(/<p>\[\[有料ライン[:：]\s*([\s\S]*?)\]\]<\/p>/g, (all, why) =>  // 有料候補の境界線の案(note)
-      `<div style="margin:24px 0;padding:10px 12px;border-top:3px dashed #d97706;background:#fff7ed;color:#9a3412;font-size:14px">💰 有料ラインの案: ここから下を有料にする場合はこの位置で区切る(理由: ${why})</div>`)
+      `<div style="margin:24px 0;padding:10px 12px;border-top:3px dashed #d97706;background:#fff7ed;color:#9a3412;font-size:14px">💰 ここから有料: note ではこの位置から下を有料エリアにする(理由: ${why})</div>`)
     .replace(/<p>\[\[photo:([pf]\d+)\]\]<\/p>/g, (all, id) => fig(id) || all)
     .replace(/<p><strong>【(?:写真|図) ([pf]\d+) をここに貼る】<\/strong>[^<]*<\/p>/g, (all, id) => fig(id) || all);
 }
@@ -1616,10 +1616,10 @@ async function draft(n) {
     ${lastCheck[n] ? checkPanel(lastCheck[n]) : ""}
     <div id="prcheck"></div>
     ${photoMan && photoMan.slots.length ? '<div id="photos"></div>' : ""}
-    ${paidCh && !closed ? `<div class="card pad stack"><div class="row" style="justify-content:space-between"><b>${paidOn ? "💰 有料候補" : "有料候補ではない"}</b>
+    ${paidCh && !closed ? `<div class="card pad stack"><div class="row" style="justify-content:space-between"><b>${paidOn ? "💰 有料記事(300円)" : "無料の記事"}</b>
       <button class="sub" id="paidToggle">${paidOn ? "有料候補から外す" : "有料候補にする"}</button></div>
-      <div class="meta">${paidOn ? "公開イメージの「有料ラインの案」の位置で区切る想定です。有料にするか・価格は note で公開するときに決めてください。外すと、境界線の案を消して書き直します。"
-        : "有料候補にすると、有料の境界線の案を本文に入れて書き直します(月に1本が目安)。"}</div></div>` : ""}
+      <div class="meta">${paidOn ? "note で公開するとき、公開イメージの「ここから有料」の位置を有料エリアの始まりにし、価格を300円にしてください。外すと境界線の行を消します(本文の中身はそのまま)。"
+        : "有料記事にすると、無料部分(悩み・結論・この先で読めること)と有料部分(体験の詳しい中身)の形に書き直します(月に2本が目安)。"}</div></div>` : ""}
     <div class="row" style="justify-content:space-between"><div class="meta">${esc(chName(ch))} ・ ${esc(STAGE_LABEL[st] || st)} ・ ${esc(meta.date || "")} ・ ${size}${pr.labels.some((l) => l.name === HUMAN_LABEL) ? " ・ 人が手直し済み" : ""}</div>
       ${closed || !canSelfEdit(ch, st) ? "" : '<button class="sub" id="edit">自分で直す</button>'}</div>
     ${thumbSrc ? `<div class="card pad stack"><div class="meta">${isSite ? "SNS で共有したときの画像(OGP)" : "見出し画像(サムネ)"}${meta.thumb_title ? ` ・ 「${esc(String(meta.thumb_title).replace(/\\n|\n/g, " / "))}」` : ""}</div>
@@ -1688,9 +1688,9 @@ async function draft(n) {
     if (paidOn) await gh(`${R}/issues/${n}/labels/${encodeURIComponent("有料候補")}`, { method: "DELETE" }).catch(() => {});
     else await gh(`${R}/issues/${n}/labels`, { method: "POST", body: JSON.stringify({ labels: ["有料候補"] }) });
     if (paidOn) { toast("有料候補から外し、境界線の案の行を消しました"); go(() => draft(n), current?.title || "下書き", false); return; }
-    const ask = "/revise 有料候補にした。有料の境界線の案 [[有料ライン: 理由]] を本文に1つ置く。無料部分で誰向けか・何が分かるか・結論の要点を見せ、具体的な手順や表は後ろ(有料側)に置く。必要なら段落の順番だけ入れ替え、内容は変えない";
+    const ask = "/revise 有料記事(300円)にした。無料部分は、読者の悩み → 結論(太字)→「この先で読めること」の箇条書き3〜5個にし、そのあとに [[有料ライン: 理由]] を1行置く。有料部分には、書き手の体験の詳しい中身を体験メモにある範囲で書く(無い体験は作らない)。価格は本文に書かない";
     await gh(`${R}/issues/${n}/comments`, { method: "POST", body: JSON.stringify({ body: ask + "\n\n(デスクから)" }) });
-    toast("有料候補にしました。境界線の案を入れて書き直します"); go(() => draft(n), current?.title || "下書き", false);
+    toast("有料記事にしました。有料記事の形に書き直します"); go(() => draft(n), current?.title || "下書き", false);
   });
   const sps = $("#sbPlanSave");
   if (sps) sps.onclick = async () => {
@@ -1870,10 +1870,10 @@ async function queueView() {
     const missing = (b) => owner && !(b.fields.worked_on && filled(b.fields.environment) && filled(b.fields.costs));
     $("#ql").innerHTML = `<h2>これから書く順(${pending.length}本)</h2>${owner ? '<p class="meta">作業した時期・動作確認した環境・かかったお金がそろったネタだけ書かれます。「記入する」から入れてください。</p>' : ""}<div class="card list">${pending.map((b, i) => `
       <div class="item" style="cursor:default"><span class="count">${i + 1}</span><div class="main"><div class="t">${esc(b.fields.keyword || b.slug)}</div>
-      <div class="m">${b.fields.paid === "true" ? '<span class="chip warnchip">💰 有料候補</span> ' : ""}${esc(b.fields.angle || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.fields.category ? " ・ " + esc(b.fields.category) : ""}${b.refs.length ? " ・ " + refLinks(b.refs) : ""}${owner && !missing(b) ? " ・ 作業時期: " + esc(b.fields.worked_on) : ""}</div></div>
+      <div class="m">${b.fields.paid === "true" ? '<span class="chip warnchip">💰 有料記事</span> ' : ""}${esc(b.fields.angle || "")}${b.fields.type ? " ・ " + esc(b.fields.type) : ""}${b.fields.category ? " ・ " + esc(b.fields.category) : ""}${b.refs.length ? " ・ " + refLinks(b.refs) : ""}${owner && !missing(b) ? " ・ 作業時期: " + esc(b.fields.worked_on) : ""}</div></div>
       ${owner ? `<button class="sub" data-fill="${esc(b.slug)}">${missing(b) ? "記入する" : "直す"}</button>` : ""}
       ${paidCh ? `<button class="sub" data-paid="${esc(b.slug)}">${b.fields.paid === "true" ? "有料候補から外す" : "有料候補にする"}</button>` : ""}</div>`).join("") || '<p class="empty">ネタ帳は空です。</p>'}</div>
-      ${paidCh ? '<p class="meta">有料候補: 月に1本は、この印の付いたネタから先に書きます(印が無ければ AI が1本を候補にします)。有料にするか・価格は、下書きを見てから決めてください。</p>' : ""}`;
+      ${paidCh ? '<p class="meta">有料記事(300円): 月に2本、この印の付いたネタから先に書きます(印が無ければ AI が次のネタを有料記事にします)。体験の詳しい中身を有料部分にするので、体験メモの多いネタに付けてください。</p>' : ""}`;
     $("#ql").querySelectorAll("[data-fill]").forEach((el) => { el.onclick = () => go(() => fillOwner(ch, el.dataset.fill), "作業時期・環境・お金"); });
     $("#ql").querySelectorAll("[data-paid]").forEach((el) => { el.onclick = async () => {  // ネタ帳の paid: true を付け外しする
       el.disabled = true;
