@@ -674,7 +674,7 @@ async function photoDataUrl(ctx, file) {
   const mime = /\.svg$/.test(file) ? "image/svg+xml" : /\.png$/.test(file) ? "image/png" : "image/webp";
   return `data:${mime};base64,${j.content.replace(/\n/g, "")}`;
 }
-// 公開イメージ(本文のプレビュー)に、写真・図解を目印の位置で入れる。目印は [[photo:f1]](md)か「【図 f1 をここに貼る】」(英語版の HTML)
+// 公開イメージ(本文のプレビュー)に、写真・図解を目印の位置で入れる。目印は [[photo:f1]](md)か「【図 f1 をここに貼る】」「[Insert figure f1 here]」(英語版の HTML)
 async function previewImages(ctx, man, st) {
   const out = {};
   await Promise.all((man?.slots || []).map(async (x) => {
@@ -692,7 +692,8 @@ function withImages(html, imgs) {
   return html.replace(/<p>\[\[有料ライン[:：]\s*([\s\S]*?)\]\]<\/p>/g, (all, why) =>  // 有料候補の境界線の案(note)
       `<div style="margin:24px 0;padding:10px 12px;border-top:3px dashed #d97706;background:#fff7ed;color:#9a3412;font-size:14px">💰 ここから有料: note ではこの位置から下を有料エリアにする(理由: ${why})</div>`)
     .replace(/<p>\[\[photo:([pf]\d+)\]\]<\/p>/g, (all, id) => fig(id) || all)
-    .replace(/<p><strong>【(?:写真|図) ([pf]\d+) をここに貼る】<\/strong>[^<]*<\/p>/g, (all, id) => fig(id) || all);
+    .replace(/<p><strong>【(?:写真|図) ([pf]\d+) をここに貼る】<\/strong>[^<]*<\/p>/g, (all, id) => fig(id) || all)
+    .replace(/<p><strong>\[Insert (?:photo|figure) ([pf]\d+) here\]<\/strong>[^<]*<\/p>/g, (all, id) => fig(id) || all);
 }
 // 有料ラインの目印 [[有料ライン: …]] の行を消す(前後の空行は1つにそろえる)。ほかの文字は変えない
 const dropPaidLine = (body) => body.replace(/^\[\[有料ライン[:：][^\n]*\]\][ \t]*\n(?:[ \t]*\n)?/gm, "").replace(/\n?\[\[有料ライン[:：][^\n]*\]\][ \t]*$/, "");
@@ -794,7 +795,7 @@ function renderPhotos(el, ctx) {
       </div>`}
     </div>`).join("")}
     ${done.length + figDone.length ? `<div class="row"><button class="sub" id="phZip">${label}をまとめてダウンロード(${done.length + figDone.length}枚)</button>
-      <span class="meta">${ctx.isSite ? "公開するとサイトに自動で入ります。" : "note・Substack はサーバーPC が下書きに入れます。入らなかったときは、本文の「【写真 p1 をここに貼る】」「【図 f1 をここに貼る】」の位置に手で貼ってください。"}</span></div>` : ""}
+      <span class="meta">${ctx.isSite ? "公開するとサイトに自動で入ります。" : "note・Substack はサーバーPC が下書きに入れます。入らなかったときは、本文の「【写真 p1 をここに貼る】」「【図 f1 をここに貼る】」(Substack は「[Insert figure f1 here]」)の位置に手で貼ってください。"}</span></div>` : ""}
   </div>`;
   el.querySelectorAll(".phprev").forEach(async (img) => { try { img.src = await photoDataUrl(ctx, img.dataset.file); } catch {} });
   const again = () => go(() => draft(ctx.n), current?.title || "下書き", false);
